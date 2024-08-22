@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "direktor"
+version = "0.1.0"
+description = ""
+authors = ["Dipankar Sarkar <me@dipankar.name>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+openai = "^1.42.0"
+tiktoken = "^0.7.0"
+tqdm = "^4.66.5"
+halo = "^0.0.31"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
