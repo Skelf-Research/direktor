@@ -9,18 +9,23 @@ from openai import OpenAI
 import tiktoken
 from tqdm import tqdm
 from halo import Halo
+from dotenv import load_dotenv
+import replicate
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Constants for API endpoints and tokens
-REPLICATE_API_TOKEN = "your_replicate_api_token_here"
-REPLICATE_API_URL = "https://api.replicate.com/v1/predictions"
-OPENAI_API_KEY = "your_openai_api_key_here"
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-DISTIL_MODEL = "vaibhavs10/incredibly-fast-whisper:3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c"
-BARK_MODEL = "suno-ai/bark:b76242b40d67c76ab6742e987628a2a9ac019e11d56ab96c4e91ce03b79b2787"
-FLUX_MODEL = "black-forest-labs/flux-schnell:fe82ca7f3f7efe4ad452c49a31e20d18b31d498bddbc1d61860703e0339406ba"
+DISTIL_MODEL = os.getenv("DISTIL_MODEL")
+BARK_MODEL = os.getenv("BARK_MODEL")
+FLUX_MODEL = os.getenv("FLUX_MODEL")
 
-GPT4_MAX_TOKENS = 8000
-GPT4_MODEL = "gpt-4-vision-preview"
+GPT4_MAX_TOKENS = int(os.getenv("GPT4_MAX_TOKENS", 8000))
+GPT4_MODEL = os.getenv("GPT4_MODEL")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 encoding = tiktoken.encoding_for_model(GPT4_MODEL)
@@ -32,35 +37,25 @@ def create_temp_dir(input_file):
     os.makedirs(temp_dir, exist_ok=True)
     return temp_dir
 
-def create_replicate_prediction(model, input_data):
-    headers = {
-        "Authorization": f"Token {REPLICATE_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    data = {
-        "version": model,
-        "input": input_data,
-    }
-    response = requests.post(REPLICATE_API_URL, headers=headers, json=data)
-    return response.json()
-
-def get_prediction_result(prediction_id):
-    headers = {
-        "Authorization": f"Token {REPLICATE_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    spinner = Halo(text='Waiting for Replicate computation', spinner='dots')
+def run_replicate_model(model, input_data):
+    spinner = Halo(text='Running Replicate model', spinner='dots')
     spinner.start()
-    while True:
-        response = requests.get(f"{REPLICATE_API_URL}/{prediction_id}", headers=headers)
-        data = response.json()
-        if data["status"] == "succeeded":
-            spinner.stop()
-            return data["output"]
-        elif data["status"] == "failed":
-            spinner.stop()
-            raise Exception("Prediction failed")
+    
+    prediction = replicate.predictions.create(
+        version=model,
+        input=input_data
+    )
+    
+    while prediction.status not in {"succeeded", "failed", "canceled"}:
         time.sleep(1)
+        prediction.reload()
+    
+    spinner.stop()
+    
+    if prediction.status == "succeeded":
+        return prediction.output
+    else:
+        raise Exception(f"Prediction failed with status: {prediction.status}")
 
 def split_text(text, max_tokens):
     tokens = encoding.encode(text)
@@ -100,7 +95,7 @@ def generate_podcast_script(input_text, temp_dir):
                 },
                 {
                     "role": "user",
-                    "content": f"Create an engaging single-person podcast script based on the following text:\n\n{chunk}"
+                    "content": f"Create an engaging single-person podcast script based on the following text, please do not add any additional text like host, pauses etc. :\n\n{chunk}"
                 }
             ]
         )
@@ -142,19 +137,58 @@ def generate_image_prompts(transcript, temp_dir):
     return all_prompts
 
 def generate_audio(text, temp_dir):
-    audio_file = os.path.join(temp_dir, 'audio.wav')
+    audio_file = os.path.join(temp_dir, 'audio.mp3')
     if os.path.exists(audio_file):
         return audio_file
 
-    input_data = {
-        "prompt": text,
-        "history_prompt": "en_speaker_1",
-        "text_temp": 0.7,
-        "waveform_temp": 0.7,
-    }
-    prediction = create_replicate_prediction(BARK_MODEL, input_data)
-    audio_url = get_prediction_result(prediction["id"])["audio_out"]
-    return download_file(audio_url, audio_file)
+    # Split the text into chunks of about 200 words each
+    words = text.split()
+    chunk_size = 200
+    chunks = [' '.join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+
+    all_audio_files = []
+
+    for i, chunk in enumerate(chunks):
+        chunk_audio_file = os.path.join(temp_dir, f'audio_chunk_{i}.mp3')
+        
+        input_data = {
+            "text": chunk,
+            "alpha": 0.3,
+            "beta": 0.7,
+            "diffusion_steps": 10,
+            "embedding_scale": 1.5,
+            "seed": 0
+        }
+        
+        output = run_replicate_model(BARK_MODEL, input_data)
+        chunk_audio_file = download_file(output["output"], chunk_audio_file)
+        all_audio_files.append(chunk_audio_file)
+
+    # If there's more than one chunk, concatenate them
+    if len(all_audio_files) > 1:
+        concat_list_file = os.path.join(temp_dir, "concat_list.txt")
+        with open(concat_list_file, "w") as f:
+            for audio_file in all_audio_files:
+                f.write(f"file '{audio_file}'\n")
+
+        subprocess.run([
+            "ffmpeg",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", concat_list_file,
+            "-c", "copy",
+            audio_file
+        ], check=True)
+
+        # Clean up individual chunk files
+        for chunk_file in all_audio_files:
+            os.remove(chunk_file)
+        os.remove(concat_list_file)
+    else:
+        # If there's only one chunk, just rename it
+        os.rename(all_audio_files[0], audio_file)
+
+    return audio_file
 
 def generate_transcript(audio_file, temp_dir):
     transcript_file = os.path.join(temp_dir, 'transcript.json')
@@ -168,8 +202,7 @@ def generate_transcript(audio_file, temp_dir):
         "language": "en",
         "timestamp": "chunk",
     }
-    prediction = create_replicate_prediction(DISTIL_MODEL, input_data)
-    transcript = get_prediction_result(prediction["id"])
+    transcript = run_replicate_model(DISTIL_MODEL, input_data)
     
     with open(transcript_file, 'w') as f:
         json.dump(transcript, f)
@@ -193,9 +226,8 @@ def generate_images(prompts, temp_dir):
             "output_format": "webp",
             "output_quality": 80,
         }
-        prediction = create_replicate_prediction(FLUX_MODEL, input_data)
-        image_url = get_prediction_result(prediction["id"])[0]
-        image_file = download_file(image_url, image_file)
+        output = run_replicate_model(FLUX_MODEL, input_data)
+        image_file = download_file(output[0], image_file)
         image_files.append(image_file)
 
     return image_files
@@ -263,6 +295,14 @@ def create_video(audio_file, image_files, image_prompts, temp_dir):
     return output_file
 
 def main(input_file, stage):
+    # Check if required environment variables are set
+    required_vars = ["REPLICATE_API_TOKEN", "OPENAI_API_KEY", "DISTIL_MODEL", "BARK_MODEL", "FLUX_MODEL", "GPT4_MODEL"]
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    if missing_vars:
+        print(f"Error: The following required environment variables are not set: {', '.join(missing_vars)}")
+        print("Please set these variables in your .env file.")
+        return
+
     temp_dir = create_temp_dir(input_file)
 
     with open(input_file, 'r') as f:
@@ -271,6 +311,7 @@ def main(input_file, stage):
     if stage <= 1:
         print("Stage 1: Generating podcast script...")
         podcast_script = generate_podcast_script(input_text, temp_dir)
+        return
     else:
         with open(os.path.join(temp_dir, 'podcast_script.txt'), 'r') as f:
             podcast_script = f.read()
@@ -278,12 +319,14 @@ def main(input_file, stage):
     if stage <= 2:
         print("Stage 2: Generating audio...")
         audio_file = generate_audio(podcast_script, temp_dir)
+        return
     else:
         audio_file = os.path.join(temp_dir, 'audio.wav')
 
     if stage <= 3:
         print("Stage 3: Generating transcript...")
         transcript = generate_transcript(audio_file, temp_dir)
+        return
     else:
         with open(os.path.join(temp_dir, 'transcript.json'), 'r') as f:
             transcript = json.load(f)
@@ -291,6 +334,7 @@ def main(input_file, stage):
     if stage <= 4:
         print("Stage 4: Generating image prompts...")
         image_prompts = generate_image_prompts(transcript, temp_dir)
+        return
     else:
         with open(os.path.join(temp_dir, 'image_prompts.json'), 'r') as f:
             image_prompts = json.load(f)
@@ -298,6 +342,7 @@ def main(input_file, stage):
     if stage <= 5:
         print("Stage 5: Generating images...")
         image_files = generate_images(image_prompts, temp_dir)
+        return
     else:
         image_dir = os.path.join(temp_dir, 'images')
         image_files = [os.path.join(image_dir, f) for f in os.listdir(image_dir) if f.endswith('.webp')]

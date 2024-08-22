@@ -11,6 +11,8 @@ openai = "^1.42.0"
 tiktoken = "^0.7.0"
 tqdm = "^4.66.5"
 halo = "^0.0.31"
+python-dotenv = "^1.0.1"
+replicate = "^0.31.0"
 
 
 [build-system]
