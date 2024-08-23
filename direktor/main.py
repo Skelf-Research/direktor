@@ -11,6 +11,8 @@ from tqdm import tqdm
 from halo import Halo
 from dotenv import load_dotenv
 import replicate
+import boto3
+from botocore.client import Config
 
 # Load environment variables from .env file
 load_dotenv()
@@ -26,6 +28,11 @@ FLUX_MODEL = os.getenv("FLUX_MODEL")
 
 GPT4_MAX_TOKENS = int(os.getenv("GPT4_MAX_TOKENS", 8000))
 GPT4_MODEL = os.getenv("GPT4_MODEL")
+
+AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
+AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+AWS_ENDPOINT_URL = "https://s3.us-west-000.backblazeb2.com"
+AWS_BUCKET_NAME = os.getenv('AWS_BUCKET_NAME')
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 encoding = tiktoken.encoding_for_model(GPT4_MODEL)
@@ -95,7 +102,7 @@ def generate_podcast_script(input_text, temp_dir):
                 },
                 {
                     "role": "user",
-                    "content": f"Create an engaging single-person podcast script based on the following text, please do not add any additional text like host, pauses etc. :\n\n{chunk}"
+                    "content": f"Create an engaging single-person podcast script based on the following text, please do not add any additional text like host, pauses etc.:\n\n{chunk}"
                 }
             ]
         )
@@ -136,20 +143,49 @@ def generate_image_prompts(transcript, temp_dir):
         json.dump(all_prompts, f)
     return all_prompts
 
+import re
+
+def split_into_sentences(text):
+    # Split the text into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    return sentences
+
+def group_sentences(sentences, max_chars=100):
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) <= max_chars:
+            current_chunk += sentence + " "
+        else:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            current_chunk = sentence + " "
+    
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
+import logging
+
+logging.basicConfig(filename='audio_generation.log', level=logging.ERROR)
+
 def generate_audio(text, temp_dir):
     audio_file = os.path.join(temp_dir, 'audio.mp3')
     if os.path.exists(audio_file):
         return audio_file
 
-    # Split the text into chunks of about 200 words each
-    words = text.split()
-    chunk_size = 200
-    chunks = [' '.join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+    # Split the text into sentences and group them into chunks
+    sentences = split_into_sentences(text)
+    chunks = group_sentences(sentences, max_chars=150)
 
     all_audio_files = []
+    failed_chunks = []
 
     for i, chunk in enumerate(chunks):
-        chunk_audio_file = os.path.join(temp_dir, f'audio_chunk_{i}.mp3')
+        chunk_audio_file = f'audio_chunk_{i}.mp3'
+        full_chunk_audio_path = os.path.join(temp_dir, chunk_audio_file)
         
         input_data = {
             "text": chunk,
@@ -160,14 +196,25 @@ def generate_audio(text, temp_dir):
             "seed": 0
         }
         
-        output = run_replicate_model(BARK_MODEL, input_data)
-        chunk_audio_file = download_file(output["output"], chunk_audio_file)
-        all_audio_files.append(chunk_audio_file)
+        try:
+            output = run_replicate_model(BARK_MODEL, input_data)
+            download_file(output, full_chunk_audio_path)
+            all_audio_files.append(chunk_audio_file)
+        except Exception as e:
+            logging.error(f"Failed to generate audio for chunk {i}: {str(e)}")
+            logging.error(f"Chunk text: {chunk}")
+            logging.error(f"Input parameters: {input_data}")
+            failed_chunks.append(i)
 
-    # If there's more than one chunk, concatenate them
+    # Remove failed chunks from the list
+    for i in failed_chunks[::-1]:
+        del chunks[i]
+
+    # If there's more than one successful chunk, concatenate them
     if len(all_audio_files) > 1:
-        concat_list_file = os.path.join(temp_dir, "concat_list.txt")
-        with open(concat_list_file, "w") as f:
+        concat_list_file = "concat_list.txt"
+        full_concat_list_path = os.path.join(temp_dir, concat_list_file)
+        with open(full_concat_list_path, "w") as f:
             for audio_file in all_audio_files:
                 f.write(f"file '{audio_file}'\n")
 
@@ -177,18 +224,41 @@ def generate_audio(text, temp_dir):
             "-safe", "0",
             "-i", concat_list_file,
             "-c", "copy",
-            audio_file
-        ], check=True)
+            "audio.mp3"
+        ], check=True, cwd=temp_dir)
 
         # Clean up individual chunk files
         for chunk_file in all_audio_files:
-            os.remove(chunk_file)
-        os.remove(concat_list_file)
-    else:
+            os.remove(os.path.join(temp_dir, chunk_file))
+        os.remove(full_concat_list_path)
+    elif len(all_audio_files) == 1:
         # If there's only one chunk, just rename it
-        os.rename(all_audio_files[0], audio_file)
+        os.rename(os.path.join(temp_dir, all_audio_files[0]), audio_file)
+    else:
+        logging.error("No audio chunks were successfully generated.")
+        return None
 
     return audio_file
+
+def upload_to_r2(file_path, object_name):
+    print(AWS_ENDPOINT_URL)
+    s3 = boto3.client('s3',
+                      endpoint_url=AWS_ENDPOINT_URL,
+                      aws_access_key_id=AWS_ACCESS_KEY_ID,
+                      aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+                      config=Config(signature_version='s3v4'),
+                      region_name='auto')
+
+    try:
+        s3.upload_file(file_path, AWS_BUCKET_NAME, object_name)
+        url = s3.generate_presigned_url('get_object',
+                                        Params={'Bucket': AWS_BUCKET_NAME,
+                                                'Key': object_name},
+                                        ExpiresIn=3600)  # 1 hour in seconds
+        return url
+    except Exception as e:
+        print(f"Failed to upload file to R2: {e}")
+        return None
 
 def generate_transcript(audio_file, temp_dir):
     transcript_file = os.path.join(temp_dir, 'transcript.json')
@@ -196,16 +266,42 @@ def generate_transcript(audio_file, temp_dir):
         with open(transcript_file, 'r') as f:
             return json.load(f)
 
+    # Generate a hash for the audio file name
+    with open(audio_file, 'rb') as f:
+        file_hash = hashlib.md5(f.read()).hexdigest()
+
+    # Convert audio to WAV format
+    wav_file = os.path.join(temp_dir, f"{file_hash}.wav")
+    subprocess.run([
+        "ffmpeg",
+        "-i", audio_file,
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",
+        wav_file
+    ], check=True)
+
+    # Upload WAV file to Cloudflare R2
+    AWS_object_name = f"{file_hash}.wav"
+    audio_url = upload_to_r2(wav_file, AWS_object_name)
+
+    if not audio_url:
+        print("Failed to upload audio file to R2. Cannot generate transcript.")
+        return None
+
     input_data = {
-        "audio": audio_file,
+        "audio": audio_url,
         "task": "transcribe",
-        "language": "en",
+        "language": "english",
         "timestamp": "chunk",
     }
     transcript = run_replicate_model(DISTIL_MODEL, input_data)
     
     with open(transcript_file, 'w') as f:
         json.dump(transcript, f)
+
+    # Clean up the temporary WAV file
+    os.remove(wav_file)
+
     return transcript
 
 def generate_images(prompts, temp_dir):
@@ -321,7 +417,7 @@ def main(input_file, stage):
         audio_file = generate_audio(podcast_script, temp_dir)
         return
     else:
-        audio_file = os.path.join(temp_dir, 'audio.wav')
+        audio_file = os.path.join(temp_dir, 'audio.mp3')
 
     if stage <= 3:
         print("Stage 3: Generating transcript...")
