@@ -373,55 +373,76 @@ def download_file(url, local_filename):
                 progress_bar.update(size)
     return local_filename
 
+import os
+import subprocess
+from PIL import Image
+
 def create_video(audio_file, image_files, image_prompts, temp_dir):
     output_file = os.path.join(temp_dir, "output.mp4")
     if os.path.exists(output_file):
         print(f"Video already exists: {output_file}")
         return output_file
 
+    # Convert WebP images to PNG
+    png_image_files = []
+    for image_file in image_files:
+        if image_file.lower().endswith('.webp'):
+            png_file = os.path.join(temp_dir, os.path.splitext(os.path.basename(image_file))[0] + '.png')
+            with Image.open(image_file) as img:
+                img.save(png_file, 'PNG')
+            png_image_files.append(png_file)
+        else:
+            png_image_files.append(image_file)
+
     # Create a temporary file for the concat demuxer
     concat_file = os.path.join(temp_dir, "concat.txt")
     
     with open(concat_file, "w") as f:
-        for i, (image_file, prompt) in enumerate(zip(image_files, image_prompts)):
-            # Get the path relative to the images directory
-            relative_path = os.path.relpath(image_file, temp_dir)
+        for i, (image_file, prompt) in enumerate(zip(png_image_files, image_prompts)):
+            image_basename = os.path.basename(image_file)
             duration = prompt['time'] if i == 0 else prompt['time'] - image_prompts[i-1]['time']
-            f.write(f"file '{relative_path}'\n")
+            f.write(f"file '{image_basename}'\n")
             f.write(f"duration {duration}\n")
         
-        # Write the last image file again with a small duration to ensure it's shown
-        relative_path = os.path.relpath(image_files[-1], os.path.join(temp_dir, 'images'))
-        f.write(f"file '{relative_path}'\n")
+        last_image_basename = os.path.basename(png_image_files[-1])
+        f.write(f"file '{last_image_basename}'\n")
         f.write("duration 0.1\n")
 
-    # First, create a video from the images
+    # Create a video from the images
     temp_video = os.path.join(temp_dir, "temp_video.mp4")
-    subprocess.run([
+    
+    ffmpeg_command = [
         "ffmpeg",
         "-f", "concat",
         "-safe", "0",
-        "-i", concat_file,
+        "-i", "concat.txt",
         "-vsync", "vfr",
         "-pix_fmt", "yuv420p",
         "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
-        temp_video
-    ], check=True, cwd=os.path.join(temp_dir, 'images'))  # Set working directory to images folder
+        "temp_video.mp4"
+    ]
+    
+    subprocess.run(ffmpeg_command, check=True, cwd=temp_dir)
 
-    # Then, combine the video with the audio
-    subprocess.run([
+    # Combine the video with the audio
+    output_command = [
         "ffmpeg",
-        "-i", os.path.relpath(temp_video, os.path.join(temp_dir, 'images')),
-        "-i", os.path.relpath(audio_file, os.path.join(temp_dir, 'images')),
+        "-i", "temp_video.mp4",
+        "-i", os.path.relpath(audio_file, temp_dir),
         "-c:v", "copy",
         "-c:a", "aac",
         "-shortest",
-        os.path.relpath(output_file, os.path.join(temp_dir, 'images'))
-    ], check=True, cwd=os.path.join(temp_dir, 'images'))  # Set working directory to images folder
+        "output.mp4"
+    ]
+    
+    subprocess.run(output_command, check=True, cwd=temp_dir)
 
     # Clean up temporary files
     os.remove(concat_file)
     os.remove(temp_video)
+    for png_file in png_image_files:
+        if png_file.lower().endswith('.png') and png_file not in image_files:
+            os.remove(png_file)
 
     print(f"Video created: {output_file}")
     return output_file
