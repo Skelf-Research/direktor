@@ -49,7 +49,7 @@ def run_replicate_model(model, input_data):
     spinner.start()
     
     prediction = replicate.predictions.create(
-        version=model,
+        model=model,
         input=input_data
     )
     
@@ -113,34 +113,60 @@ def generate_podcast_script(input_text, temp_dir):
         f.write(script)
     return script
 
+def aggregate_chunks(chunks, target_duration=30):
+    aggregated_chunks = []
+    current_chunk = {"text": "", "timestamp": [chunks[0]["timestamp"][0], 0]}
+    
+    for chunk in chunks:
+        if chunk["timestamp"][1] - current_chunk["timestamp"][0] > target_duration:
+            current_chunk["timestamp"][1] = chunk["timestamp"][0]
+            aggregated_chunks.append(current_chunk)
+            current_chunk = {"text": chunk["text"], "timestamp": chunk["timestamp"]}
+        else:
+            current_chunk["text"] += " " + chunk["text"]
+            current_chunk["timestamp"][1] = chunk["timestamp"][1]
+    
+    if current_chunk["text"]:
+        aggregated_chunks.append(current_chunk)
+    
+    return aggregated_chunks
+
 def generate_image_prompts(transcript, temp_dir):
     prompts_file = os.path.join(temp_dir, 'image_prompts.json')
     if os.path.exists(prompts_file):
         with open(prompts_file, 'r') as f:
             return json.load(f)
 
-    chunks = split_text(json.dumps(transcript), GPT4_MAX_TOKENS - 1000)
+    client = OpenAI()
     all_prompts = []
 
-    for chunk in tqdm(chunks, desc="Generating image prompts"):
+    # Aggregate chunks to approximately 30-second segments
+    aggregated_chunks = aggregate_chunks(transcript['chunks'], target_duration=30)
+
+    for chunk in tqdm(aggregated_chunks, desc="Generating image prompts"):
         response = client.chat.completions.create(
             model=GPT4_MODEL,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an AI assistant that generates image prompts based on podcast transcripts."
+                    "content": "You are an AI assistant that generates image prompts based on podcast transcripts. Generate a single, vivid image prompt that captures the main theme or most striking visual element from the given text."
                 },
                 {
                     "role": "user",
-                    "content": f"Generate image prompts with timestamps for the following podcast transcript chunk. Provide one image prompt approximately every 10 seconds. Format the output as a JSON list of objects with 'time' and 'prompt' keys.\n\n{chunk}"
+                    "content": f"Generate an stable diffusion generation prompt for the following podcast transcript segment:\n\nText: {chunk['text']}\nTimestamp: {chunk['timestamp'][0]} - {chunk['timestamp'][1]}"
                 }
             ]
         )
-        prompts = json.loads(response.choices[0].message.content)
-        all_prompts.extend(prompts)
+        
+        prompt = response.choices[0].message.content.strip()
+        all_prompts.append({
+            "time": chunk['timestamp'][0],
+            "prompt": prompt
+        })
 
     with open(prompts_file, 'w') as f:
         json.dump(all_prompts, f)
+    
     return all_prompts
 
 import re
@@ -321,6 +347,8 @@ def generate_images(prompts, temp_dir):
             "aspect_ratio": "16:9",
             "output_format": "webp",
             "output_quality": 80,
+            "seed":0,
+            "disable_safety_checker": True
         }
         output = run_replicate_model(FLUX_MODEL, input_data)
         image_file = download_file(output[0], image_file)
@@ -351,42 +379,50 @@ def create_video(audio_file, image_files, image_prompts, temp_dir):
         print(f"Video already exists: {output_file}")
         return output_file
 
-    filter_file = os.path.join(temp_dir, "filter_complex.txt")
-    with open(filter_file, "w") as f:
-        f.write("[0:a]aformat=channel_layouts=stereo[aout]\n")
-        for i, image in enumerate(image_files):
-            f.write(f"[{i+1}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v{i}]\n")
+    # Create a temporary file for the concat demuxer
+    concat_file = os.path.join(temp_dir, "concat.txt")
+    
+    with open(concat_file, "w") as f:
+        for i, (image_file, prompt) in enumerate(zip(image_files, image_prompts)):
+            # Get the path relative to the images directory
+            relative_path = os.path.relpath(image_file, temp_dir)
+            duration = prompt['time'] if i == 0 else prompt['time'] - image_prompts[i-1]['time']
+            f.write(f"file '{relative_path}'\n")
+            f.write(f"duration {duration}\n")
         
-        for i, prompt in enumerate(image_prompts):
-            if i == 0:
-                f.write(f"[v0]trim=0:{prompt['time']},setpts=PTS-STARTPTS[v{i}out];\n")
-            else:
-                prev_time = image_prompts[i-1]['time']
-                f.write(f"[v{i}]trim=0:{prompt['time']-prev_time},setpts=PTS-STARTPTS[v{i}out];\n")
-        
-        f.write(f"{''.join([f'[v{i}out]' for i in range(len(image_prompts))])}concat=n={len(image_prompts)}:v=1:a=0[vout]\n")
+        # Write the last image file again with a small duration to ensure it's shown
+        relative_path = os.path.relpath(image_files[-1], os.path.join(temp_dir, 'images'))
+        f.write(f"file '{relative_path}'\n")
+        f.write("duration 0.1\n")
 
-    cmd = [
+    # First, create a video from the images
+    temp_video = os.path.join(temp_dir, "temp_video.mp4")
+    subprocess.run([
         "ffmpeg",
-        "-i", audio_file,
-    ]
-    for image in image_files:
-        cmd.extend(["-i", image])
-    cmd.extend([
-        "-filter_complex_script", filter_file,
-        "-map", "[vout]",
-        "-map", "[aout]",
-        "-c:v", "libx264",
-        "-preset", "medium",
-        "-crf", "23",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-shortest",
-        output_file
-    ])
+        "-f", "concat",
+        "-safe", "0",
+        "-i", concat_file,
+        "-vsync", "vfr",
+        "-pix_fmt", "yuv420p",
+        "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+        temp_video
+    ], check=True, cwd=os.path.join(temp_dir, 'images'))  # Set working directory to images folder
 
-    subprocess.run(cmd, check=True)
-    os.remove(filter_file)
+    # Then, combine the video with the audio
+    subprocess.run([
+        "ffmpeg",
+        "-i", os.path.relpath(temp_video, os.path.join(temp_dir, 'images')),
+        "-i", os.path.relpath(audio_file, os.path.join(temp_dir, 'images')),
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-shortest",
+        os.path.relpath(output_file, os.path.join(temp_dir, 'images'))
+    ], check=True, cwd=os.path.join(temp_dir, 'images'))  # Set working directory to images folder
+
+    # Clean up temporary files
+    os.remove(concat_file)
+    os.remove(temp_video)
+
     print(f"Video created: {output_file}")
     return output_file
 
