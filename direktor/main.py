@@ -377,7 +377,7 @@ import os
 import subprocess
 from PIL import Image
 
-def create_video(audio_file, image_files, image_prompts, temp_dir):
+def create_video(audio_file, image_files, image_prompts, temp_dir, keywords):
     output_file = os.path.join(temp_dir, "output.mp4")
     if os.path.exists(output_file):
         print(f"Video already exists: {output_file}")
@@ -424,12 +424,20 @@ def create_video(audio_file, image_files, image_prompts, temp_dir):
     
     subprocess.run(ffmpeg_command, check=True, cwd=temp_dir)
 
-    # Combine the video with the audio
+    # Prepare the drawtext filter for keyword overlay
+    drawtext_filter = ""
+    for i, (keyword, start_time, end_time) in enumerate(keywords):
+        escaped_keyword = keyword.replace("'", "\\'")
+        drawtext_filter += f"drawtext=fontfile=../../mexcellent_3d.ttf:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=5:x=(w-tw)/2:y=h-th-20:text='{escaped_keyword}':enable='between(t,{start_time},{end_time})'"
+        if i < len(keywords) - 1:
+            drawtext_filter += ","
+
+    # Combine the video with the audio and add keyword overlay
     output_command = [
         "ffmpeg",
         "-i", "temp_video.mp4",
         "-i", os.path.relpath(audio_file, temp_dir),
-        "-c:v", "copy",
+        "-filter_complex", drawtext_filter,
         "-c:a", "aac",
         "-shortest",
         "output.mp4"
@@ -502,7 +510,12 @@ def main(input_file, stage):
 
     if stage <= 6:
         print("Stage 6: Creating video...")
-        output_file = create_video(audio_file, image_files, image_prompts, temp_dir)
+        keywords = [
+            ("First Keyword", 0, 5),
+            ("Second Keyword", 5, 10),
+            ("Third Keyword", 10, 15)
+        ]
+        output_file = create_video(audio_file, image_files, image_prompts, temp_dir, keywords)
         print(f"Video created: {output_file}")
     else:
         print(f"All stages completed. Video should be in {temp_dir}")
