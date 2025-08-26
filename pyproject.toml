@@ -1,9 +1,19 @@
 [tool.poetry]
 name = "direktor"
 version = "0.1.0"
-description = ""
+description = "Transform text content into engaging podcast-style videos with synchronized visuals"
 authors = ["Dipankar Sarkar <me@dipankar.name>"]
 readme = "README.md"
+license = "MIT"
+repository = "https://github.com/dipankar/direktor"
+keywords = ["ai", "video", "podcast", "automation", "content-generation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -16,6 +26,13 @@ replicate = "^0.31.0"
 boto3 = "^1.35.4"
 pillow = "^10.4.0"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+black = "^23.0.0"
+flake8 = "^6.0.0"
+
+[tool.poetry.scripts]
+direktor = "direktor.cli:main"
 
 [build-system]
 requires = ["poetry-core"]

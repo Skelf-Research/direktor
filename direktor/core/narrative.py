@@ -6,9 +6,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def get_ai_response(prompt, content):
-    client = openai.Client()
+    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    model = os.getenv("GPT4_MODEL", "gpt-4o")
     response = client.chat.completions.create(
-        model="gpt-4o",  # You can change this to the appropriate model
+        model=model,  # Use the model from environment variables
         messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": content}

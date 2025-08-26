@@ -5,6 +5,7 @@ import requests
 import subprocess
 import os
 import hashlib
+import sys
 from openai import OpenAI
 import tiktoken
 from tqdm import tqdm
@@ -14,12 +15,16 @@ import replicate
 import boto3
 from botocore.client import Config
 
+# Add the parent directory to sys.path to import narrative module
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 # Load environment variables from .env file
 load_dotenv()
 
 # Constants for API endpoints and tokens
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
+if REPLICATE_API_TOKEN:
+    os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 DISTIL_MODEL = os.getenv("DISTIL_MODEL")
@@ -34,8 +39,8 @@ AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_ENDPOINT_URL = "https://s3.us-west-000.backblazeb2.com"
 AWS_BUCKET_NAME = os.getenv('AWS_BUCKET_NAME')
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-encoding = tiktoken.encoding_for_model(GPT4_MODEL)
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+encoding = tiktoken.encoding_for_model(GPT4_MODEL) if GPT4_MODEL else None
 
 def create_temp_dir(input_file):
     with open(input_file, 'rb') as f:
@@ -232,34 +237,52 @@ def generate_audio(text, temp_dir):
             logging.error(f"Input parameters: {input_data}")
             failed_chunks.append(i)
 
-    # Remove failed chunks from the list
-    for i in failed_chunks[::-1]:
-        del chunks[i]
+    # Remove failed chunks from the list (create a new list without failed chunks)
+    successful_chunks = []
+    successful_audio_files = []
+    for i, (chunk, audio_file_name) in enumerate(zip(chunks, all_audio_files)):
+        if i not in failed_chunks:
+            successful_chunks.append(chunk)
+            successful_audio_files.append(audio_file_name)
 
     # If there's more than one successful chunk, concatenate them
-    if len(all_audio_files) > 1:
+    if len(successful_audio_files) > 1:
         concat_list_file = "concat_list.txt"
         full_concat_list_path = os.path.join(temp_dir, concat_list_file)
         with open(full_concat_list_path, "w") as f:
-            for audio_file in all_audio_files:
-                f.write(f"file '{audio_file}'\n")
+            for audio_file_name in successful_audio_files:
+                f.write(f"file '{audio_file_name}'\n")
 
-        subprocess.run([
-            "ffmpeg",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", concat_list_file,
-            "-c", "copy",
-            "audio.mp3"
-        ], check=True, cwd=temp_dir)
+        try:
+            subprocess.run([
+                "ffmpeg",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list_file,
+                "-c", "copy",
+                "audio.mp3"
+            ], check=True, cwd=temp_dir)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"FFmpeg concatenation failed: {str(e)}")
+            return None
 
         # Clean up individual chunk files
-        for chunk_file in all_audio_files:
-            os.remove(os.path.join(temp_dir, chunk_file))
-        os.remove(full_concat_list_path)
-    elif len(all_audio_files) == 1:
+        for chunk_file in successful_audio_files:
+            try:
+                os.remove(os.path.join(temp_dir, chunk_file))
+            except OSError as e:
+                logging.warning(f"Could not remove chunk file {chunk_file}: {str(e)}")
+        try:
+            os.remove(full_concat_list_path)
+        except OSError as e:
+            logging.warning(f"Could not remove concat list file: {str(e)}")
+    elif len(successful_audio_files) == 1:
         # If there's only one chunk, just rename it
-        os.rename(os.path.join(temp_dir, all_audio_files[0]), audio_file)
+        try:
+            os.rename(os.path.join(temp_dir, successful_audio_files[0]), audio_file)
+        except OSError as e:
+            logging.error(f"Failed to rename audio file: {str(e)}")
+            return None
     else:
         logging.error("No audio chunks were successfully generated.")
         return None
@@ -388,25 +411,35 @@ def create_video(audio_file, image_files, image_prompts, temp_dir, keywords):
     for image_file in image_files:
         if image_file.lower().endswith('.webp'):
             png_file = os.path.join(temp_dir, os.path.splitext(os.path.basename(image_file))[0] + '.png')
-            with Image.open(image_file) as img:
-                img.save(png_file, 'PNG')
-            png_image_files.append(png_file)
+            try:
+                with Image.open(image_file) as img:
+                    img.save(png_file, 'PNG')
+                png_image_files.append(png_file)
+            except Exception as e:
+                print(f"Warning: Failed to convert {image_file} to PNG: {e}")
+                # Use the original file if conversion fails
+                png_image_files.append(image_file)
         else:
             png_image_files.append(image_file)
 
     # Create a temporary file for the concat demuxer
     concat_file = os.path.join(temp_dir, "concat.txt")
     
-    with open(concat_file, "w") as f:
-        for i, (image_file, prompt) in enumerate(zip(png_image_files, image_prompts)):
-            image_basename = os.path.basename(image_file)
-            duration = prompt['time'] if i == 0 else prompt['time'] - image_prompts[i-1]['time']
-            f.write(f"file '{image_basename}'\n")
-            f.write(f"duration {duration}\n")
-        
-        last_image_basename = os.path.basename(png_image_files[-1])
-        f.write(f"file '{last_image_basename}'\n")
-        f.write("duration 0.1\n")
+    try:
+        with open(concat_file, "w") as f:
+            for i, (image_file, prompt) in enumerate(zip(png_image_files, image_prompts)):
+                image_basename = os.path.basename(image_file)
+                duration = prompt['time'] if i == 0 else prompt['time'] - image_prompts[i-1]['time']
+                f.write(f"file '{image_basename}'\n")
+                f.write(f"duration {duration}\n")
+            
+            if png_image_files:  # Check if list is not empty
+                last_image_basename = os.path.basename(png_image_files[-1])
+                f.write(f"file '{last_image_basename}'\n")
+                f.write("duration 0.1\n")
+    except Exception as e:
+        print(f"Error creating concat file: {e}")
+        return None
 
     # Create a video from the images
     temp_video = os.path.join(temp_dir, "temp_video.mp4")
@@ -422,40 +455,64 @@ def create_video(audio_file, image_files, image_prompts, temp_dir, keywords):
         "temp_video.mp4"
     ]
     
-    subprocess.run(ffmpeg_command, check=True, cwd=temp_dir)
+    try:
+        subprocess.run(ffmpeg_command, check=True, cwd=temp_dir, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        print(f"FFmpeg video creation failed: {e}")
+        print(f"FFmpeg stdout: {e.stdout.decode() if e.stdout else 'None'}")
+        print(f"FFmpeg stderr: {e.stderr.decode() if e.stderr else 'None'}")
+        return None
 
     # Prepare the drawtext filter for keyword overlay
     drawtext_filter = ""
-    for i, (keyword, start_time, end_time) in enumerate(keywords):
-        escaped_keyword = keyword.replace("'", "\\'")
-        drawtext_filter += f"drawtext=fontfile=../../mexcellent_3d.ttf:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=5:x=(w-tw)/2:y=h-th-20:text='{escaped_keyword}':enable='between(t,{start_time},{end_time})'"
-        if i < len(keywords) - 1:
-            drawtext_filter += ","
+    if keywords:  # Only add drawtext filter if keywords are provided
+        for i, (keyword, start_time, end_time) in enumerate(keywords):
+            escaped_keyword = keyword.replace("'", "\\'")
+            drawtext_filter += f"drawtext=fontfile=mexcellent_3d.ttf:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=5:x=(w-tw)/2:y=h-th-20:text='{escaped_keyword}':enable='between(t,{start_time},{end_time})'"
+            if i < len(keywords) - 1:
+                drawtext_filter += ","
 
     # Combine the video with the audio and add keyword overlay
     output_command = [
         "ffmpeg",
         "-i", "temp_video.mp4",
-        "-i", os.path.relpath(audio_file, temp_dir),
-        "-filter_complex", drawtext_filter,
+        "-i", os.path.basename(audio_file),  # Use basename since we're in temp_dir
         "-c:a", "aac",
         "-shortest",
         "output.mp4"
     ]
     
-    subprocess.run(output_command, check=True, cwd=temp_dir)
+    # Add drawtext filter if it exists
+    if drawtext_filter:
+        output_command.insert(-4, "-filter_complex")
+        output_command.insert(-4, drawtext_filter)
+    
+    try:
+        subprocess.run(output_command, check=True, cwd=temp_dir, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        print(f"FFmpeg audio-video combination failed: {e}")
+        print(f"FFmpeg stdout: {e.stdout.decode() if e.stdout else 'None'}")
+        print(f"FFmpeg stderr: {e.stderr.decode() if e.stderr else 'None'}")
+        return None
 
     # Clean up temporary files
-    os.remove(concat_file)
-    os.remove(temp_video)
-    for png_file in png_image_files:
-        if png_file.lower().endswith('.png') and png_file not in image_files:
-            os.remove(png_file)
+    try:
+        if os.path.exists(concat_file):
+            os.remove(concat_file)
+        if os.path.exists(temp_video):
+            os.remove(temp_video)
+        for png_file in png_image_files:
+            if (png_file.lower().endswith('.png') and 
+                png_file not in image_files and 
+                os.path.exists(png_file)):
+                os.remove(png_file)
+    except OSError as e:
+        print(f"Warning: Failed to clean up temporary files: {e}")
 
     print(f"Video created: {output_file}")
     return output_file
 
-def main(input_file, stage):
+def main(input_file, stage, keywords=None):
     # Check if required environment variables are set
     required_vars = ["REPLICATE_API_TOKEN", "OPENAI_API_KEY", "DISTIL_MODEL", "BARK_MODEL", "FLUX_MODEL", "GPT4_MODEL"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
@@ -468,6 +525,15 @@ def main(input_file, stage):
 
     with open(input_file, 'r') as f:
         input_text = f.read()
+
+    # Apply content optimization if this is the first stage
+    if stage <= 1:
+        print("Optimizing content...")
+        try:
+            from .narrative import optimize_content
+            input_text = optimize_content(input_text)
+        except Exception as e:
+            print(f"Warning: Content optimization failed: {e}. Proceeding with original text.")
 
     if stage <= 1:
         print("Stage 1: Generating podcast script...")
@@ -510,11 +576,12 @@ def main(input_file, stage):
 
     if stage <= 6:
         print("Stage 6: Creating video...")
-        keywords = [
-            ("First Keyword", 0, 5),
-            ("Second Keyword", 5, 10),
-            ("Third Keyword", 10, 15)
-        ]
+        if keywords is None:
+            keywords = [
+                ("Direktor", 0, 5),
+                ("AI Video", 5, 10),
+                ("Automation", 10, 15)
+            ]
         output_file = create_video(audio_file, image_files, image_prompts, temp_dir, keywords)
         print(f"Video created: {output_file}")
     else:
