@@ -20,7 +20,9 @@ Direktor is configured primarily through environment variables. This guide cover
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GPT4_MAX_TOKENS` | `8000` | Maximum tokens per GPT request |
-| `AWS_ENDPOINT_URL` | `https://s3.us-west-000.backblazeb2.com` | S3-compatible endpoint |
+| `AWS_ENDPOINT_URL` | `https://s3.us-west-000.backblazeb2.com` | S3-compatible endpoint (default: Backblaze B2 us-west-000) |
+
+The `AWS_ENDPOINT_URL` default points to Backblaze B2. Override it to use Cloudflare R2 (`https://<account>.r2.cloudflarestorage.com`), Amazon S3 (omit, or `https://s3.<region>.amazonaws.com`), or any other S3-compatible service.
 
 ### Cloud Storage
 
@@ -40,10 +42,10 @@ REPLICATE_API_TOKEN=r8_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # Models
-DISTIL_MODEL=vaibhavs10/incredibly-fast-whisper:3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c
-BARK_MODEL=suno-ai/bark:b76242b40d67c76ab6742e987628a2a9ac019e11d56ab96c4e91ce03b79b2787
-FLUX_MODEL=black-forest-labs/flux-schnell
-GPT4_MODEL=gpt-4-turbo-preview
+DISTIL_MODEL=3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c
+BARK_MODEL=adirik/styletts2:989cb5ea6d2401314eb30685740cb9f6fd1c9001b8940659b406f952837ab5ac
+FLUX_MODEL=black-forest-labs/flux-schnell:fe82ca7f3f7efe4ad452c49a31e20d18b31d498bddbc1d61860703e0339406ba
+GPT4_MODEL=gpt-4-vision-preview
 GPT4_MAX_TOKENS=8000
 
 # Cloud Storage
@@ -60,16 +62,18 @@ AWS_BUCKET_NAME=direktor-audio
 The default BARK model provides high-quality voice synthesis. You can use alternative models on Replicate:
 
 ```env
-# Default (recommended)
-BARK_MODEL=suno-ai/bark:b76242b40d67c76ab6742e987628a2a9ac019e11d56ab96c4e91ce03b79b2787
+# Default (StyleTTS2 via Replicate)
+BARK_MODEL=adirik/styletts2:989cb5ea6d2401314eb30685740cb9f6fd1c9001b8940659b406f952837ab5ac
 ```
+
+The `BARK_MODEL` variable name is preserved for backward compatibility but any Replicate TTS model with a compatible input schema (`text`, `alpha`, `beta`, `diffusion_steps`, `embedding_scale`, `seed`) can be used.
 
 ### Transcription Models
 
-Distil-Whisper provides fast, accurate transcription:
+Distil-Whisper / Incredibly Fast Whisper provides fast transcription with chunk-level timestamps:
 
 ```env
-DISTIL_MODEL=vaibhavs10/incredibly-fast-whisper:3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c
+DISTIL_MODEL=3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c
 ```
 
 ### Image Generation Models
@@ -87,12 +91,17 @@ FLUX_MODEL=black-forest-labs/flux-dev
 ### GPT Models
 
 ```env
-# Recommended for quality
+# Default (matches sample.env)
+GPT4_MODEL=gpt-4-vision-preview
+
+# Higher quality / newer
 GPT4_MODEL=gpt-4-turbo-preview
 
 # Budget option
 GPT4_MODEL=gpt-3.5-turbo
 ```
+
+The model name is passed directly to `openai.chat.completions.create` and is also used by `tiktoken.encoding_for_model` for token splitting. If a model name is not recognised by `tiktoken`, content splitting will fail.
 
 ## Programmatic Configuration
 

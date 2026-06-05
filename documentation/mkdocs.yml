@@ -1,8 +1,10 @@
 site_name: Direktor Documentation
 site_description: Transform text content into engaging podcast-style videos with AI
 site_author: Dipankar Sarkar
+site_url: https://docs.skelfresearch.com/direktor/
 repo_url: https://github.com/Skelf-Research/direktor
 repo_name: Skelf-Research/direktor
+edit_uri: edit/main/documentation/docs/
 
 theme:
   name: material
@@ -34,10 +36,14 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
-          paths: [../direktor]
+          paths: [..]
           options:
             show_source: true
             show_root_heading: true
+            docstring_style: google
+            docstring_options:
+              warn_missing_types: false
+              warn_unknown_params: false
 
 markdown_extensions:
   - pymdownx.highlight:

@@ -67,10 +67,10 @@ REPLICATE_API_TOKEN=your_replicate_token
 OPENAI_API_KEY=your_openai_key
 
 # Model Configuration
-DISTIL_MODEL=vaibhavs10/incredibly-fast-whisper:3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c
-BARK_MODEL=suno-ai/bark:b76242b40d67c76ab6742e987628a2a9ac019e11d56ab96c4e91ce03b79b2787
-FLUX_MODEL=black-forest-labs/flux-schnell
-GPT4_MODEL=gpt-4-turbo-preview
+DISTIL_MODEL=3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c
+BARK_MODEL=adirik/styletts2:989cb5ea6d2401314eb30685740cb9f6fd1c9001b8940659b406f952837ab5ac
+FLUX_MODEL=black-forest-labs/flux-schnell:fe82ca7f3f7efe4ad452c49a31e20d18b31d498bddbc1d61860703e0339406ba
+GPT4_MODEL=gpt-4-vision-preview
 GPT4_MAX_TOKENS=8000
 
 # Cloud Storage (Cloudflare R2 or S3-compatible)
