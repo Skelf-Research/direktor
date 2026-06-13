@@ -1,11 +1,21 @@
 import os
+from typing import Optional
 import openai
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-def get_ai_response(prompt, content):
+def get_ai_response(prompt: str, content: str) -> str:
+    """Get AI response from OpenAI API.
+
+    Args:
+        prompt: System prompt for the AI
+        content: User content to process
+
+    Returns:
+        AI response content
+    """
     client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     model = os.getenv("GPT4_MODEL", "gpt-4o")
     response = client.chat.completions.create(
@@ -21,7 +31,15 @@ def get_ai_response(prompt, content):
     )
     return response.choices[0].message.content.strip()
 
-def content_optimization(content):
+def content_optimization(content: str) -> str:
+    """Optimize content for clarity, engagement, and readability.
+
+    Args:
+        content: Input content to optimize
+
+    Returns:
+        Optimized content with improved clarity and engagement
+    """
     prompt = """
     You are an expert editor tasked with optimizing articles for clarity, engagement, and readability. Your goal is to improve the overall quality of the text while preserving the core message and key information.
 
@@ -40,7 +58,15 @@ def content_optimization(content):
     """
     return get_ai_response(prompt, content)
 
-def nlp_narrative_enhancement(content):
+def nlp_narrative_enhancement(content: str) -> str:
+    """Enhance content using neuro-linguistic programming techniques.
+
+    Args:
+        content: Input content to enhance
+
+    Returns:
+        Enhanced content with NLP techniques applied
+    """
     prompt = """
     You are an expert in neuro-linguistic programming and narrative techniques. Your task is to enhance the given text using NLP principles to make it more engaging, persuasive, and impactful.
 
@@ -61,7 +87,15 @@ def nlp_narrative_enhancement(content):
     """
     return get_ai_response(prompt, content)
 
-def grapheme_optimization(content):
+def grapheme_optimization(content: str) -> str:
+    """Optimize content at the grapheme (character) level.
+
+    Args:
+        content: Input content to optimize
+
+    Returns:
+        Content optimized at character level
+    """
     prompt = """
     You are a linguistic expert specializing in grapheme-level text optimization. Your task is to refine the text by making small, character-level changes that enhance readability and engagement without altering the overall meaning.
 
@@ -78,7 +112,15 @@ def grapheme_optimization(content):
     """
     return get_ai_response(prompt, content)
 
-def optimize_content(input_content):
+def optimize_content(input_content: str) -> str:
+    """Optimize content through multiple enhancement stages.
+
+    Args:
+        input_content: Original content to optimize
+
+    Returns:
+        Fully optimized content
+    """
     print("Step 1: Content Optimization")
     optimized_content = content_optimization(input_content)
     print("Step 1 completed.")
@@ -95,8 +137,8 @@ def optimize_content(input_content):
 
 if __name__ == "__main__":
     input_content = input("Please enter the content you want to optimize: ")
-    
+
     optimized_content = optimize_content(input_content)
-    
+
     print("\nOptimized Content:")
     print(optimized_content)

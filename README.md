@@ -1,88 +1,100 @@
 # Direktor
 
-Direktor is a Python library that transforms text content into engaging podcast-style videos with synchronized visuals. It leverages state-of-the-art AI models to create compelling video content from simple text inputs.
+Transform text into professional podcast-style videos using AI. Distributed processing with zero dependencies.
 
-## Features
-
-- Convert text articles into podcast-style audio
-- Generate relevant images for each segment of the content
-- Automatically synchronize audio and visuals
-- Add keyword overlays to videos
-- Resume processing from any stage of the pipeline
-- CLI tool for easy usage
-
-## Installation
+## Quick Start
 
 ```bash
+# Install
 pip install direktor
+
+# Run (starts everything needed)
+direktor tracker &
+direktor workers &
+direktor submit article.txt --watch
 ```
 
-## Setup
+Done! Your video will be generated automatically.
 
-1. Create a `.env` file in your project directory with the following variables:
+## What It Does
 
-```env
-REPLICATE_API_TOKEN=your_replicate_api_token_here
-OPENAI_API_KEY=your_openai_api_key_here
-DISTIL_MODEL=3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c
-BARK_MODEL=adirik/styletts2:989cb5ea6d2401314eb30685740cb9f6fd1c9001b8940659b406f952837ab5ac
-FLUX_MODEL=black-forest-labs/flux-schnell:fe82ca7f3f7efe4ad452c49a31e20d18b31d498bddbc1d61860703e0339406ba
-GPT4_MODEL=gpt-4-vision-preview
-GPT4_MAX_TOKENS=8000
-AWS_ACCESS_KEY_ID=your_access_key_id
-AWS_SECRET_ACCESS_KEY=your_secret_access_key
-AWS_ENDPOINT_URL=your_AWS_endpoint_url
-AWS_BUCKET_NAME=your_bucket_name
-```
-
-2. Install FFmpeg on your system:
-   - Ubuntu/Debian: `sudo apt install ffmpeg`
-   - macOS: `brew install ffmpeg`
-   - Windows: Download from https://ffmpeg.org/download.html
-
-## Usage
-
-### As a CLI Tool
-
-```bash
-direktor input.txt [--stage N]
-```
-
-Where:
-- `input.txt` is your text file to convert
-- `--stage N` (optional) specifies the stage to start from (1-6)
-
-### As a Python Library
-
-```python
-from direktor import generate_video
-
-# Generate a video from text
-generate_video("input.txt", stage=6)
-```
+Direktor converts text articles into engaging videos with:
+- AI-generated narration (BARK)
+- Context-aware visuals (FLUX)
+- Synchronized audio and video
+- Professional overlays and effects
 
 ## How It Works
 
-Direktor processes your text through 6 stages:
+```
+Text → Script → Audio → Images → Video
+ 📝      🎵      🖼️       🎬
+```
 
-1. **Content Optimization**: Improves clarity and engagement of your text
-2. **Podcast Script Generation**: Creates a natural-sounding podcast script
-3. **Audio Generation**: Converts the script to audio using AI voice synthesis
-4. **Transcript Generation**: Creates a timestamped transcript of the audio
-5. **Image Prompt Generation**: Creates image prompts for each segment
-6. **Video Creation**: Combines audio and images into a synchronized video
+Each stage can run on different machines for scaling.
+
+## Environment Setup
+
+Create `.env` file:
+
+```env
+# Required
+OPENAI_API_KEY=your_key_here
+REPLICATE_API_TOKEN=your_token_here
+
+# Cloud Storage (AWS S3/Cloudflare R2)
+AWS_ACCESS_KEY_ID=your_key
+AWS_SECRET_ACCESS_KEY=your_secret
+AWS_ENDPOINT_URL=your_endpoint
+AWS_BUCKET_NAME=your_bucket
+```
+
+## Common Commands
+
+```bash
+direktor submit file.txt          # Submit job
+direktor status job_12345         # Check progress
+direktor stats                    # View queues
+direktor worker script            # Run specific worker
+```
+
+## Scaling
+
+**Single Machine:**
+```bash
+direktor tracker &    # Job coordination
+direktor workers &    # All processing stages
+```
+
+**Multiple Machines:**
+```bash
+# Machine 1 (coordinator)
+direktor tracker
+
+# Machine 2 (CPU work)
+direktor worker script
+direktor worker audio
+
+# Machine 3 (GPU work)
+direktor worker images
+direktor worker video
+```
 
 ## Requirements
 
 - Python 3.11+
 - FFmpeg
-- API keys for OpenAI and Replicate
-- Cloud storage (AWS S3/Cloudflare R2 compatible)
+- OpenAI API key
+- Replicate API key
+- Cloud storage (S3/R2)
+
+## Documentation
+
+- [Architecture](docs/architecture.md) - System design and components
+- [Deployment](docs/deployment.md) - Production setup guides
+- [Development](docs/development.md) - Contributing and extending
+- [API Reference](docs/api.md) - Python API documentation
 
 ## License
 
-MIT License
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+MIT
