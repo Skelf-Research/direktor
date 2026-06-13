@@ -1,197 +1,206 @@
 """
 Utility functions for Direktor.
+
+This module contains helper functions for file operations, API calls, and text processing.
 """
-import os
+
 import hashlib
+import os
+import re
+import time
 import requests
-from typing import Optional
+import boto3
+from botocore.client import Config
+from halo import Halo
 from tqdm import tqdm
+import replicate
+
+from .config import (
+    encoding,
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    AWS_ENDPOINT_URL,
+    AWS_BUCKET_NAME,
+)
 
 
-def create_temp_dir(input_file: str, base_dir: str = "temp") -> str:
-    """Create temporary directory based on input file hash.
+def create_temp_dir(input_file):
+    """
+    Create a temporary directory based on the input file's hash.
 
     Args:
-        input_file: Path to input file
-        base_dir: Base directory for temp files
+        input_file: Path to the input file
 
     Returns:
-        Path to created temp directory
+        Path to the created temporary directory
     """
-    with open(input_file, 'rb') as f:
+    with open(input_file, "rb") as f:
         file_hash = hashlib.md5(f.read()).hexdigest()
-    temp_dir = os.path.join(base_dir, file_hash)
+    temp_dir = os.path.join("temp", file_hash)
     os.makedirs(temp_dir, exist_ok=True)
     return temp_dir
 
 
-def download_file(url: str, local_filename: str, show_progress: bool = True) -> str:
-    """Download file from URL with optional progress bar.
+def run_replicate_model(model, input_data):
+    """
+    Run a Replicate model with the given input data.
 
     Args:
-        url: URL to download from
-        local_filename: Local file path to save to
-        show_progress: Whether to show download progress
+        model: The Replicate model identifier
+        input_data: Dictionary of input parameters
 
     Returns:
-        Path to downloaded file
-    """
-    # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(local_filename), exist_ok=True)
+        The model output
 
+    Raises:
+        Exception: If the prediction fails
+    """
+    spinner = Halo(text="Running Replicate model", spinner="dots")
+    spinner.start()
+
+    prediction = replicate.predictions.create(model=model, input=input_data)
+
+    while prediction.status not in {"succeeded", "failed", "canceled"}:
+        time.sleep(1)
+        prediction.reload()
+
+    spinner.stop()
+
+    if prediction.status == "succeeded":
+        return prediction.output
+    else:
+        raise Exception(f"Prediction failed with status: {prediction.status}")
+
+
+def split_text(text, max_tokens):
+    """
+    Split text into chunks based on token count.
+
+    Args:
+        text: The text to split
+        max_tokens: Maximum tokens per chunk
+
+    Returns:
+        List of text chunks
+    """
+    tokens = encoding.encode(text)
+    chunks = []
+    current_chunk = []
+    current_length = 0
+
+    for token in tokens:
+        if current_length + 1 > max_tokens:
+            chunks.append(encoding.decode(current_chunk))
+            current_chunk = []
+            current_length = 0
+        current_chunk.append(token)
+        current_length += 1
+
+    if current_chunk:
+        chunks.append(encoding.decode(current_chunk))
+
+    return chunks
+
+
+def split_into_sentences(text):
+    """
+    Split text into sentences.
+
+    Args:
+        text: The text to split
+
+    Returns:
+        List of sentences
+    """
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    return sentences
+
+
+def group_sentences(sentences, max_chars=100):
+    """
+    Group sentences into chunks with a maximum character count.
+
+    Args:
+        sentences: List of sentences to group
+        max_chars: Maximum characters per chunk
+
+    Returns:
+        List of grouped text chunks
+    """
+    chunks = []
+    current_chunk = ""
+
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) <= max_chars:
+            current_chunk += sentence + " "
+        else:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            current_chunk = sentence + " "
+
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+
+    return chunks
+
+
+def download_file(url, local_filename):
+    """
+    Download a file from a URL with progress tracking.
+
+    Args:
+        url: The URL to download from
+        local_filename: Local path to save the file
+
+    Returns:
+        The local filename
+    """
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
-        total_size = int(r.headers.get('content-length', 0))
+        total_size = int(r.headers.get("content-length", 0))
         block_size = 8192
-
-        if show_progress and total_size > 0:
-            with open(local_filename, 'wb') as f, tqdm(
-                desc=os.path.basename(local_filename),
-                total=total_size,
-                unit='iB',
-                unit_scale=True,
-                unit_divisor=1024,
-            ) as progress_bar:
-                for data in r.iter_content(block_size):
-                    size = f.write(data)
-                    progress_bar.update(size)
-        else:
-            with open(local_filename, 'wb') as f:
-                for data in r.iter_content(block_size):
-                    f.write(data)
-
+        with open(local_filename, "wb") as f, tqdm(
+            desc=os.path.basename(local_filename),
+            total=total_size,
+            unit="iB",
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as progress_bar:
+            for data in r.iter_content(block_size):
+                size = f.write(data)
+                progress_bar.update(size)
     return local_filename
 
 
-def get_file_hash(file_path: str) -> str:
-    """Get MD5 hash of file.
+def upload_to_r2(file_path, object_name):
+    """
+    Upload a file to S3-compatible storage (Cloudflare R2).
 
     Args:
-        file_path: Path to file
+        file_path: Path to the local file
+        object_name: Object name in the bucket
 
     Returns:
-        MD5 hash as hex string
+        Presigned URL for the uploaded file, or None on failure
     """
-    with open(file_path, 'rb') as f:
-        return hashlib.md5(f.read()).hexdigest()
+    print(AWS_ENDPOINT_URL)
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=AWS_ENDPOINT_URL,
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        config=Config(signature_version="s3v4"),
+        region_name="auto",
+    )
 
-
-def sanitize_filename(filename: str) -> str:
-    """Sanitize filename by removing/replacing invalid characters.
-
-    Args:
-        filename: Original filename
-
-    Returns:
-        Sanitized filename
-    """
-    import re
-    # Remove or replace invalid characters
-    filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
-    # Remove leading/trailing whitespace and dots
-    filename = filename.strip(' .')
-    # Limit length
-    if len(filename) > 255:
-        name, ext = os.path.splitext(filename)
-        filename = name[:255-len(ext)] + ext
-    return filename
-
-
-def ensure_directory(path: str) -> str:
-    """Ensure directory exists, creating if necessary.
-
-    Args:
-        path: Directory path
-
-    Returns:
-        Directory path
-    """
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def get_file_size(file_path: str) -> int:
-    """Get file size in bytes.
-
-    Args:
-        file_path: Path to file
-
-    Returns:
-        File size in bytes
-    """
     try:
-        return os.path.getsize(file_path)
-    except OSError:
-        return 0
-
-
-def format_duration(seconds: float) -> str:
-    """Format duration in seconds to human-readable string.
-
-    Args:
-        seconds: Duration in seconds
-
-    Returns:
-        Formatted duration string
-    """
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    elif seconds < 3600:
-        minutes = seconds / 60
-        return f"{minutes:.1f}m"
-    else:
-        hours = seconds / 3600
-        return f"{hours:.1f}h"
-
-
-def validate_url(url: str) -> bool:
-    """Validate if string is a valid URL.
-
-    Args:
-        url: URL string to validate
-
-    Returns:
-        True if valid URL, False otherwise
-    """
-    import re
-    url_pattern = re.compile(
-        r'^https?://'  # http:// or https://
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain...
-        r'localhost|'  # localhost...
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
-        r'(?::\d+)?'  # optional port
-        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
-    return url_pattern.match(url) is not None
-
-
-def retry_operation(func, max_retries: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,)):
-    """Retry an operation with exponential backoff.
-
-    Args:
-        func: Function to retry
-        max_retries: Maximum number of retry attempts
-        delay: Initial delay between retries
-        exceptions: Tuple of exceptions to catch
-
-    Returns:
-        Function result
-
-    Raises:
-        Last exception if all retries fail
-    """
-    import time
-    import random
-
-    for attempt in range(max_retries + 1):
-        try:
-            return func()
-        except exceptions as e:
-            if attempt == max_retries:
-                raise
-
-            # Exponential backoff with jitter
-            wait_time = delay * (2 ** attempt) + random.uniform(0, 1)
-            time.sleep(wait_time)
-
-    # Should never reach here
-    raise RuntimeError("Retry operation failed unexpectedly")
+        s3.upload_file(file_path, AWS_BUCKET_NAME, object_name)
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": AWS_BUCKET_NAME, "Key": object_name},
+            ExpiresIn=3600,  # 1 hour in seconds
+        )
+        return url
+    except Exception as e:
+        print(f"Failed to upload file to R2: {e}")
+        return None
