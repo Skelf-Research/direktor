@@ -33,6 +33,9 @@ direktor my_article.txt
 
 # Or run up to a specific stage
 direktor my_article.txt --stage 3
+
+# Custom output directory with keyword overlays
+direktor my_article.txt --output ./videos --keywords-file keywords.json
 ```
 
 ### Using Python API
@@ -45,11 +48,21 @@ generate_video("my_article.txt")
 
 # Or run up to stage 3 (generate transcript)
 generate_video("my_article.txt", stage=3)
+
+# Advanced options
+result = generate_video(
+    "my_article.txt",
+    stage=6,
+    output_dir="./videos",
+    keywords=[("Introduction", 0, 10)],
+)
+print(result.output_file)
 ```
 
 ## Step 3: Find Your Output
 
-The output will be in a `temp/<hash>/` directory:
+The output will be in a `temp/<hash>/` directory by default, or the directory
+specified with `--output`:
 
 ```
 temp/

@@ -4,148 +4,179 @@ Video creation module for Direktor.
 This module handles combining audio and images into the final video.
 """
 
+from __future__ import annotations
+
 import os
-import subprocess
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 
 from PIL import Image
 
 from .config import FONT_PATH
+from .exceptions import VideoCreationError
+from .logger import get_logger
+from .utils import run_subprocess
+
+logger = get_logger("video")
 
 
-def create_video(audio_file, image_files, image_prompts, temp_dir, keywords=None):
+def _convert_to_png(image_file: Path, temp_dir: Path) -> Path:
+    """Convert a WebP image to PNG for compatibility with FFmpeg."""
+    if image_file.suffix.lower() != ".webp":
+        return image_file
+
+    png_file = temp_dir / f"{image_file.stem}.png"
+    try:
+        with Image.open(image_file) as img:
+            img.save(png_file, "PNG")
+        return png_file
+    except Exception as e:
+        logger.warning("Failed to convert %s to PNG: %s", image_file, e)
+        return image_file
+
+
+def _build_concat_file(
+    image_files: Sequence[Path],
+    image_prompts: Sequence[dict[str, Any]],
+    concat_file: Path,
+) -> None:
+    """Build an FFmpeg concat demuxer file.
+
+    Durations are derived from the prompt timestamps. The last image is held
+    for a negligible duration because the concat demuxer requires a final entry.
     """
-    Create a video from audio and images with optional keyword overlays.
+    lines: list[str] = []
+    for i, (image_file, prompt) in enumerate(
+        zip(image_files, image_prompts, strict=False)
+    ):
+        # Use absolute paths with safe=0 so the concat file is unambiguous.
+        lines.append(f"file '{image_file.as_posix()}'")
+        duration = (
+            float(prompt["time"])
+            if i == 0
+            else float(prompt["time"]) - float(image_prompts[i - 1]["time"])
+        )
+        lines.append(f"duration {duration:.3f}")
+
+    if image_files:
+        lines.append(f"file '{image_files[-1].as_posix()}'")
+        lines.append("duration 0.1")
+
+    concat_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _build_drawtext_filter(
+    keywords: Sequence[tuple[str, float, float]], font_path: Path
+) -> str:
+    """Build an FFmpeg drawtext filter string from keyword tuples."""
+    filters: list[str] = []
+    for keyword, start_time, end_time in keywords:
+        escaped = keyword.replace("'", "\\'")
+        filters.append(
+            f"drawtext=fontfile={font_path}:fontsize=24:fontcolor=white:"
+            f"box=1:boxcolor=black@0.5:boxborderw=5:x=(w-tw)/2:y=h-th-20:"
+            f"text='{escaped}':enable='between(t,{start_time},{end_time})'"
+        )
+    return ",".join(filters)
+
+
+def create_video(
+    audio_file: str | os.PathLike[str],
+    image_files: Sequence[str | os.PathLike[str]],
+    image_prompts: Sequence[dict[str, Any]],
+    temp_dir: str | os.PathLike[str],
+    keywords: Sequence[tuple[str, float, float]] | None = None,
+) -> Path:
+    """Create a video from audio and images with optional keyword overlays.
 
     Args:
-        audio_file: Path to the audio file
-        image_files: List of paths to image files
-        image_prompts: List of image prompts with timestamps
-        temp_dir: Temporary directory for intermediate files
-        keywords: Optional list of (keyword, start_time, end_time) tuples for overlays
+        audio_file: Path to the audio file.
+        image_files: List of paths to image files.
+        image_prompts: List of image prompts with timestamps.
+        temp_dir: Temporary directory for intermediate files.
+        keywords: Optional sequence of ``(keyword, start_time, end_time)``
+            tuples for overlays.
 
     Returns:
-        Path to the output video file, or None on failure
+        Path to the output video file.
+
+    Raises:
+        VideoCreationError: If FFmpeg fails or inputs are inconsistent.
     """
-    output_file = os.path.join(temp_dir, "output.mp4")
-    if os.path.exists(output_file):
-        print(f"Video already exists: {output_file}")
+    temp_path = Path(temp_dir)
+    audio_path = Path(audio_file)
+    output_file = temp_path / "output.mp4"
+
+    if output_file.exists():
+        logger.info("Video already exists: %s", output_file)
         return output_file
 
-    # Convert WebP images to PNG
-    png_image_files = []
-    for image_file in image_files:
-        if image_file.lower().endswith(".webp"):
-            png_file = os.path.join(
-                temp_dir, os.path.splitext(os.path.basename(image_file))[0] + ".png"
-            )
-            try:
-                with Image.open(image_file) as img:
-                    img.save(png_file, "PNG")
-                png_image_files.append(png_file)
-            except Exception as e:
-                print(f"Warning: Failed to convert {image_file} to PNG: {e}")
-                png_image_files.append(image_file)
-        else:
-            png_image_files.append(image_file)
+    if len(image_files) != len(image_prompts):
+        raise VideoCreationError(
+            f"Number of images ({len(image_files)}) does not match number of "
+            f"prompts ({len(image_prompts)})."
+        )
 
-    # Create a temporary file for the concat demuxer
-    concat_file = os.path.join(temp_dir, "concat.txt")
+    png_images = [_convert_to_png(Path(img), temp_path) for img in image_files]
+    concat_file = temp_path / "concat.txt"
+    temp_video = temp_path / "temp_video.mp4"
 
     try:
-        with open(concat_file, "w") as f:
-            for i, (image_file, prompt) in enumerate(
-                zip(png_image_files, image_prompts)
-            ):
-                image_basename = os.path.basename(image_file)
-                duration = (
-                    prompt["time"]
-                    if i == 0
-                    else prompt["time"] - image_prompts[i - 1]["time"]
-                )
-                f.write(f"file '{image_basename}'\n")
-                f.write(f"duration {duration}\n")
+        _build_concat_file(png_images, image_prompts, concat_file)
 
-            if png_image_files:
-                last_image_basename = os.path.basename(png_image_files[-1])
-                f.write(f"file '{last_image_basename}'\n")
-                f.write("duration 0.1\n")
+        run_subprocess(
+            [
+                "ffmpeg",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_file),
+                "-vsync",
+                "vfr",
+                "-pix_fmt",
+                "yuv420p",
+                "-vf",
+                "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+                str(temp_video),
+            ],
+            cwd=temp_path,
+        )
+
+        drawtext_filter = _build_drawtext_filter(keywords or [], Path(FONT_PATH))
+        output_command = [
+            "ffmpeg",
+            "-i",
+            str(temp_video),
+            "-i",
+            str(audio_path),
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(output_file),
+        ]
+        if drawtext_filter:
+            output_command[-4:-4] = ["-filter_complex", drawtext_filter]
+
+        run_subprocess(output_command, cwd=temp_path)
     except Exception as e:
-        print(f"Error creating concat file: {e}")
-        return None
+        raise VideoCreationError(f"Video creation failed: {e}") from e
+    finally:
+        for path in [concat_file, temp_video]:
+            try:
+                path.unlink()
+            except OSError:
+                logger.warning("Could not remove temporary file %s", path)
+        for png_file in png_images:
+            if png_file.suffix.lower() == ".png" and png_file not in [
+                Path(img) for img in image_files
+            ]:
+                try:
+                    png_file.unlink()
+                except OSError:
+                    logger.warning("Could not remove converted image %s", png_file)
 
-    # Create a video from the images
-    temp_video = os.path.join(temp_dir, "temp_video.mp4")
-
-    ffmpeg_command = [
-        "ffmpeg",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", "concat.txt",
-        "-vsync", "vfr",
-        "-pix_fmt", "yuv420p",
-        "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
-        "temp_video.mp4",
-    ]
-
-    try:
-        subprocess.run(ffmpeg_command, check=True, cwd=temp_dir, capture_output=True)
-    except subprocess.CalledProcessError as e:
-        print(f"FFmpeg video creation failed: {e}")
-        print(f"FFmpeg stdout: {e.stdout.decode() if e.stdout else 'None'}")
-        print(f"FFmpeg stderr: {e.stderr.decode() if e.stderr else 'None'}")
-        return None
-
-    # Prepare the drawtext filter for keyword overlay
-    drawtext_filter = ""
-    if keywords:
-        for i, (keyword, start_time, end_time) in enumerate(keywords):
-            escaped_keyword = keyword.replace("'", "\\'")
-            drawtext_filter += (
-                f"drawtext=fontfile={FONT_PATH}:fontsize=24:fontcolor=white:"
-                f"box=1:boxcolor=black@0.5:boxborderw=5:x=(w-tw)/2:y=h-th-20:"
-                f"text='{escaped_keyword}':enable='between(t,{start_time},{end_time})'"
-            )
-            if i < len(keywords) - 1:
-                drawtext_filter += ","
-
-    # Combine the video with the audio and add keyword overlay
-    output_command = [
-        "ffmpeg",
-        "-i", "temp_video.mp4",
-        "-i", os.path.basename(audio_file),
-        "-c:a", "aac",
-        "-shortest",
-        "output.mp4",
-    ]
-
-    # Add drawtext filter if it exists
-    if drawtext_filter:
-        output_command.insert(-4, "-filter_complex")
-        output_command.insert(-4, drawtext_filter)
-
-    try:
-        subprocess.run(output_command, check=True, cwd=temp_dir, capture_output=True)
-    except subprocess.CalledProcessError as e:
-        print(f"FFmpeg audio-video combination failed: {e}")
-        print(f"FFmpeg stdout: {e.stdout.decode() if e.stdout else 'None'}")
-        print(f"FFmpeg stderr: {e.stderr.decode() if e.stderr else 'None'}")
-        return None
-
-    # Clean up temporary files
-    try:
-        if os.path.exists(concat_file):
-            os.remove(concat_file)
-        if os.path.exists(temp_video):
-            os.remove(temp_video)
-        for png_file in png_image_files:
-            if (
-                png_file.lower().endswith(".png")
-                and png_file not in image_files
-                and os.path.exists(png_file)
-            ):
-                os.remove(png_file)
-    except OSError as e:
-        print(f"Warning: Failed to clean up temporary files: {e}")
-
-    print(f"Video created: {output_file}")
+    logger.info("Video created: %s", output_file)
     return output_file

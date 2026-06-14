@@ -78,6 +78,8 @@ nav:
     - utils: api/utils.md
     - pipeline: api/pipeline.md
     - narrative: api/narrative.md
+    - settings: api/settings.md
+    - exceptions: api/exceptions.md
   - Tutorials:
     - Create Your First Video: tutorials/first-video.md
     - Custom Image Styles: tutorials/custom-images.md

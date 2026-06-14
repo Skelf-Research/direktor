@@ -1,46 +1,55 @@
 """
 Configuration and constants for Direktor.
 
-This module handles all environment variable loading and API client initialization.
+This module re-exports the validated application settings for backward
+compatibility. New code should import from :mod:`direktor.core.settings`
+directly.
 """
 
-import os
-from dotenv import load_dotenv
+from __future__ import annotations
+
+from pathlib import Path
+
 from openai import OpenAI
-import tiktoken
+from tiktoken import Encoding
 
-# Load environment variables from .env file
-load_dotenv()
+from .settings import Settings, get_settings
 
-# API Tokens
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-if REPLICATE_API_TOKEN:
-    os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
+# -----------------------------------------------------------------------------
+# Backward-compatible module-level re-exports
+# -----------------------------------------------------------------------------
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Model Configuration
-DISTIL_MODEL = os.getenv("DISTIL_MODEL")
-BARK_MODEL = os.getenv("BARK_MODEL")
-FLUX_MODEL = os.getenv("FLUX_MODEL")
-GPT4_MODEL = os.getenv("GPT4_MODEL")
-GPT4_MAX_TOKENS = int(os.getenv("GPT4_MAX_TOKENS", 8000))
+def _settings() -> Settings:
+    """Lazy accessor used by all re-exported module-level values."""
+    return get_settings()
 
-# AWS/S3 Configuration (for Cloudflare R2 or other S3-compatible storage)
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL", "https://s3.us-west-000.backblazeb2.com")
-AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 
-# Initialize OpenAI client
-client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+# API tokens
+REPLICATE_API_TOKEN: str = ""
+OPENAI_API_KEY: str = ""
 
-# Initialize tokenizer for text splitting
-encoding = tiktoken.encoding_for_model(GPT4_MODEL) if GPT4_MODEL else None
+# Model configuration
+DISTIL_MODEL: str = ""
+BARK_MODEL: str = ""
+FLUX_MODEL: str = ""
+GPT4_MODEL: str = ""
+GPT4_MAX_TOKENS: int = 8000
+
+# AWS/S3 configuration
+AWS_ACCESS_KEY_ID: str | None = None
+AWS_SECRET_ACCESS_KEY: str | None = None
+AWS_ENDPOINT_URL: str | None = None
+AWS_BUCKET_NAME: str | None = None
+AWS_REGION_NAME: str = "auto"
 
 # Asset paths
-ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
-FONT_PATH = os.path.join(ASSETS_DIR, "mexcellent_3d.ttf")
+ASSETS_DIR: Path = Path(__file__).resolve().parent.parent / "assets"
+FONT_PATH: Path = ASSETS_DIR / "mexcellent_3d.ttf"
+
+# API clients / utilities (initialized lazily on first access)
+client: OpenAI | None = None
+encoding: Encoding | None = None
 
 # Required environment variables for validation
 REQUIRED_ENV_VARS = [
@@ -53,12 +62,14 @@ REQUIRED_ENV_VARS = [
 ]
 
 
-def validate_env_vars():
+def validate_env_vars() -> bool:
     """Check if all required environment variables are set."""
-    missing_vars = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
-    if missing_vars:
-        raise EnvironmentError(
-            f"Missing required environment variables: {', '.join(missing_vars)}. "
-            "Please set these variables in your .env file."
-        )
+    settings = _settings()
+    settings.ensure_valid()
     return True
+
+
+# -----------------------------------------------------------------------------
+# Module-level initialization on import is intentionally avoided.
+# The first call to get_settings() or validate_env_vars() triggers loading.
+# -----------------------------------------------------------------------------

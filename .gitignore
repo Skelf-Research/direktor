@@ -146,6 +146,19 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# Claude / local
+.claude/
+
+# Application runtime
+logs/
+temp/
+*.log
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
+
 # Pyre type checker
 .pyre/
 

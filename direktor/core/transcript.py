@@ -4,140 +4,182 @@ Transcript generation module for Direktor.
 This module handles podcast script generation and audio transcription.
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import os
-import subprocess
+from pathlib import Path
+from typing import Any
 
 from tqdm import tqdm
 
-from .config import client, GPT4_MODEL, GPT4_MAX_TOKENS, DISTIL_MODEL
-from .utils import split_text, run_replicate_model, upload_to_r2
+from .exceptions import TranscriptGenerationError
+from .logger import get_logger
+from .settings import get_settings
+from .utils import run_replicate_model, run_subprocess, split_text, upload_to_r2
+
+logger = get_logger("transcript")
 
 
-def generate_podcast_script(input_text, temp_dir):
-    """
-    Generate a podcast script from input text using GPT.
+def generate_podcast_script(input_text: str, temp_dir: str | os.PathLike[str]) -> str:
+    """Generate a podcast script from input text using GPT.
 
     Args:
-        input_text: The text to convert into a podcast script
-        temp_dir: Temporary directory for output files
+        input_text: The text to convert into a podcast script.
+        temp_dir: Temporary directory for output files.
 
     Returns:
-        The generated podcast script
+        The generated podcast script.
     """
-    script_file = os.path.join(temp_dir, "podcast_script.txt")
-    if os.path.exists(script_file):
-        with open(script_file, "r") as f:
-            return f.read()
+    temp_path = Path(temp_dir)
+    script_file = temp_path / "podcast_script.txt"
+    if script_file.exists():
+        return script_file.read_text(encoding="utf-8")
 
-    chunks = split_text(input_text, GPT4_MAX_TOKENS - 1000)
-    script_parts = []
+    settings = get_settings()
+    chunks = split_text(input_text, settings.gpt4_max_tokens - 1000)
+    script_parts: list[str] = []
+
+    system_prompt = (
+        "You are an AI assistant that creates engaging single-person podcast "
+        "scripts from input text."
+    )
+    user_template = (
+        "Create an engaging single-person podcast script based on the following "
+        "text. Do not add any additional text like host names, pauses, or sound "
+        "effects:\n\n{text}"
+    )
 
     for chunk in tqdm(chunks, desc="Generating podcast script"):
-        response = client.chat.completions.create(
-            model=GPT4_MODEL,
+        response = settings.client.chat.completions.create(
+            model=settings.gpt4_model,
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are an AI assistant that creates engaging single-person podcast scripts from input text.",
-                },
-                {
-                    "role": "user",
-                    "content": f"Create an engaging single-person podcast script based on the following text, please do not add any additional text like host, pauses etc.:\n\n{chunk}",
-                },
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_template.format(text=chunk)},
             ],
         )
-        script_parts.append(response.choices[0].message.content)
+        content = response.choices[0].message.content
+        if content is None:
+            raise TranscriptGenerationError("OpenAI returned empty content for script.")
+        script_parts.append(content)
 
     script = " ".join(script_parts)
-    with open(script_file, "w") as f:
-        f.write(script)
+    script_file.write_text(script, encoding="utf-8")
     return script
 
 
-def aggregate_chunks(chunks, target_duration=30):
-    """
-    Aggregate transcript chunks into segments of approximately target duration.
+def aggregate_chunks(
+    chunks: list[dict[str, Any]], target_duration: int = 30
+) -> list[dict[str, Any]]:
+    """Aggregate transcript chunks into segments of approximately target duration.
 
     Args:
-        chunks: List of transcript chunks with timestamps
-        target_duration: Target duration in seconds for each segment
+        chunks: List of transcript chunks with ``text`` and ``timestamp`` keys.
+            Each timestamp is a ``[start, end]`` pair in seconds.
+        target_duration: Target duration in seconds for each segment.
 
     Returns:
-        List of aggregated chunks
+        List of aggregated chunks.
     """
-    aggregated_chunks = []
-    current_chunk = {"text": "", "timestamp": [chunks[0]["timestamp"][0], 0]}
+    aggregated: list[dict[str, Any]] = []
+    current_text = ""
+    current_start: float | None = None
+    current_end: float | None = None
 
     for chunk in chunks:
-        if chunk["timestamp"][1] - current_chunk["timestamp"][0] > target_duration:
-            current_chunk["timestamp"][1] = chunk["timestamp"][0]
-            aggregated_chunks.append(current_chunk)
-            current_chunk = {"text": chunk["text"], "timestamp": chunk["timestamp"]}
+        text = chunk.get("text", "")
+        timestamp = chunk.get("timestamp", [0.0, 0.0])
+        start = float(timestamp[0])
+        end = float(timestamp[1])
+
+        if current_start is None:
+            current_start = start
+
+        if current_end is not None and end - current_start > target_duration:
+            aggregated.append(
+                {
+                    "text": current_text.strip(),
+                    "timestamp": [current_start, current_end],
+                }
+            )
+            current_text = text
+            current_start = start
+            current_end = end
         else:
-            current_chunk["text"] += " " + chunk["text"]
-            current_chunk["timestamp"][1] = chunk["timestamp"][1]
+            current_text = f"{current_text} {text}".strip()
+            current_end = end
 
-    if current_chunk["text"]:
-        aggregated_chunks.append(current_chunk)
+    if current_text and current_start is not None and current_end is not None:
+        aggregated.append(
+            {"text": current_text.strip(), "timestamp": [current_start, current_end]}
+        )
 
-    return aggregated_chunks
+    return aggregated
 
 
-def generate_transcript(audio_file, temp_dir):
-    """
-    Generate a transcript from an audio file using Whisper.
+def generate_transcript(
+    audio_file: str | os.PathLike[str], temp_dir: str | os.PathLike[str]
+) -> dict[str, Any]:
+    """Generate a transcript from an audio file using Whisper.
 
     Args:
-        audio_file: Path to the audio file
-        temp_dir: Temporary directory for intermediate files
+        audio_file: Path to the audio file.
+        temp_dir: Temporary directory for intermediate files.
 
     Returns:
-        Transcript dictionary with chunks and timestamps, or None on failure
+        Transcript dictionary with chunks and timestamps.
+
+    Raises:
+        TranscriptGenerationError: If transcription fails.
     """
-    transcript_file = os.path.join(temp_dir, "transcript.json")
-    if os.path.exists(transcript_file):
-        with open(transcript_file, "r") as f:
-            return json.load(f)
+    temp_path = Path(temp_dir)
+    transcript_file = temp_path / "transcript.json"
+    if transcript_file.exists():
+        with transcript_file.open(encoding="utf-8") as f:
+            data: dict[str, Any] = json.load(f)
+            return data
 
-    # Generate a hash for the audio file name
-    with open(audio_file, "rb") as f:
-        file_hash = hashlib.md5(f.read()).hexdigest()
+    audio_path = Path(audio_file)
+    file_hash = hashlib.md5(audio_path.read_bytes()).hexdigest()
+    wav_file = temp_path / f"{file_hash}.wav"
 
-    # Convert audio to WAV format
-    wav_file = os.path.join(temp_dir, f"{file_hash}.wav")
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-i", audio_file,
-            "-acodec", "pcm_s16le",
-            "-ar", "16000",
-            wav_file,
-        ],
-        check=True,
-    )
+    try:
+        run_subprocess(
+            [
+                "ffmpeg",
+                "-i",
+                str(audio_path),
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                "16000",
+                str(wav_file),
+            ],
+            cwd=temp_path,
+        )
 
-    # Upload WAV file to Cloudflare R2
-    aws_object_name = f"{file_hash}.wav"
-    audio_url = upload_to_r2(wav_file, aws_object_name)
+        aws_object_name = f"{file_hash}.wav"
+        audio_url = upload_to_r2(wav_file, aws_object_name)
 
-    if not audio_url:
-        print("Failed to upload audio file to R2. Cannot generate transcript.")
-        return None
+        input_data = {
+            "audio": audio_url,
+            "task": "transcribe",
+            "language": "english",
+            "timestamp": "chunk",
+        }
+        transcript: dict[str, Any] = run_replicate_model(
+            get_settings().distil_model, input_data
+        )
 
-    input_data = {
-        "audio": audio_url,
-        "task": "transcribe",
-        "language": "english",
-        "timestamp": "chunk",
-    }
-    transcript = run_replicate_model(DISTIL_MODEL, input_data)
+        with transcript_file.open("w", encoding="utf-8") as f:
+            json.dump(transcript, f)
 
-    with open(transcript_file, "w") as f:
-        json.dump(transcript, f)
-
-    # Clean up the temporary WAV file
-    os.remove(wav_file)
-
-    return transcript
+        return transcript
+    except Exception as e:
+        raise TranscriptGenerationError(f"Failed to generate transcript: {e}") from e
+    finally:
+        try:
+            wav_file.unlink()
+        except OSError:
+            logger.warning("Could not remove temporary WAV file %s", wav_file)

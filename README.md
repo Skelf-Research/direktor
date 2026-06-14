@@ -1,5 +1,6 @@
 # Direktor
 
+[![CI](https://github.com/Skelf-Research/direktor/actions/workflows/ci.yml/badge.svg)](https://github.com/Skelf-Research/direktor/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/direktor.svg)](https://pypi.org/project/direktor/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -49,6 +50,9 @@ direktor input.txt
 
 # Run up to specific stage
 direktor input.txt --stage 3
+
+# Custom output directory and keyword overlays
+direktor input.txt --output ./videos --keywords-file keywords.json
 ```
 
 ### Python API

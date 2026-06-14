@@ -10,11 +10,10 @@ __author__ = "Dipankar Sarkar"
 __email__ = "me@dipankar.name"
 
 # Import main functions for easier access
-from .core.pipeline import main as generate_video
-from .core.narrative import optimize_content
-
 # Expose individual modules for advanced usage
-from .core import audio, video, transcript, images, utils
+from .core import audio, images, transcript, utils, video
+from .core.narrative import optimize_content
+from .core.pipeline import main as generate_video
 
 __all__ = [
     "generate_video",

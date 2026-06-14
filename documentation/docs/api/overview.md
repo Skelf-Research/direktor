@@ -10,7 +10,9 @@ direktor/
 ├── cli.py               # Command-line interface
 └── core/
     ├── __init__.py      # Core module exports
-    ├── config.py        # Configuration and constants
+    ├── config.py        # Backward-compatible configuration re-exports
+    ├── settings.py      # Validated application settings
+    ├── exceptions.py    # Custom exception types
     ├── utils.py         # Utility functions
     ├── audio.py         # Audio generation
     ├── transcript.py    # Script and transcript generation
@@ -90,7 +92,10 @@ from direktor.core.utils import (
 Main pipeline orchestration.
 
 ```python
-from direktor.core.pipeline import main
+from direktor.core.pipeline import main, PipelineResult
+
+result = main("article.txt", stage=6, output_dir="./videos")
+print(result.output_file)
 ```
 
 ### [narrative](narrative.md)
@@ -99,6 +104,22 @@ Content optimization.
 
 ```python
 from direktor.core.narrative import optimize_content
+```
+
+### [settings](settings.md)
+
+Validated application settings.
+
+```python
+from direktor.core.settings import get_settings
+```
+
+### [exceptions](exceptions.md)
+
+Custom exception hierarchy.
+
+```python
+from direktor.core.exceptions import PipelineError
 ```
 
 ## Type Hints

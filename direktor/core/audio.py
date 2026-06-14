@@ -1,46 +1,60 @@
 """
 Audio generation module for Direktor.
 
-This module handles text-to-speech conversion using the BARK model.
+This module handles text-to-speech conversion using the BARK model via
+Replicate.
 """
 
-import logging
+from __future__ import annotations
+
 import os
-import subprocess
+from pathlib import Path
+from typing import Any
 
-from .config import BARK_MODEL
-from .utils import run_replicate_model, split_into_sentences, group_sentences, download_file
+from .exceptions import AudioGenerationError
+from .logger import get_logger
+from .settings import get_settings
+from .utils import (
+    download_file,
+    group_sentences,
+    run_replicate_model,
+    run_subprocess,
+    split_into_sentences,
+)
 
-logging.basicConfig(filename="audio_generation.log", level=logging.ERROR)
+logger = get_logger("audio")
 
 
-def generate_audio(text, temp_dir):
-    """
-    Generate audio from text using the BARK text-to-speech model.
+def generate_audio(text: str, temp_dir: str | os.PathLike[str]) -> Path:
+    """Generate audio from text using the BARK text-to-speech model.
 
     Args:
-        text: The text to convert to speech
-        temp_dir: Temporary directory for output files
+        text: The text to convert to speech.
+        temp_dir: Temporary directory for output files.
 
     Returns:
-        Path to the generated audio file, or None on failure
+        Path to the generated audio file.
+
+    Raises:
+        AudioGenerationError: If audio generation fails completely.
     """
-    audio_file = os.path.join(temp_dir, "audio.mp3")
-    if os.path.exists(audio_file):
+    temp_path = Path(temp_dir)
+    audio_file = temp_path / "audio.mp3"
+    if audio_file.exists():
+        logger.info("Audio already exists: %s", audio_file)
         return audio_file
 
-    # Split the text into sentences and group them into chunks
     sentences = split_into_sentences(text)
-    chunks = group_sentences(sentences, max_chars=150)
+    chunks = group_sentences(sentences, max_chars=get_settings().max_chunk_chars)
 
-    all_audio_files = []
-    failed_chunks = []
+    all_audio_files: list[str] = []
+    failed_chunks: list[int] = []
 
     for i, chunk in enumerate(chunks):
         chunk_audio_file = f"audio_chunk_{i}.mp3"
-        full_chunk_audio_path = os.path.join(temp_dir, chunk_audio_file)
+        full_chunk_audio_path = temp_path / chunk_audio_file
 
-        input_data = {
+        input_data: dict[str, Any] = {
             "text": chunk,
             "alpha": 0.3,
             "beta": 0.7,
@@ -50,70 +64,60 @@ def generate_audio(text, temp_dir):
         }
 
         try:
-            output = run_replicate_model(BARK_MODEL, input_data)
+            output = run_replicate_model(get_settings().bark_model, input_data)
             download_file(output, full_chunk_audio_path)
             all_audio_files.append(chunk_audio_file)
-        except Exception as e:
-            logging.error(f"Failed to generate audio for chunk {i}: {str(e)}")
-            logging.error(f"Chunk text: {chunk}")
-            logging.error(f"Input parameters: {input_data}")
+        except Exception:
+            logger.exception("Failed to generate audio for chunk %d", i)
             failed_chunks.append(i)
 
-    # Remove failed chunks from the list
-    successful_chunks = []
-    successful_audio_files = []
-    for i, (chunk, audio_file_name) in enumerate(zip(chunks, all_audio_files)):
-        if i not in failed_chunks:
-            successful_chunks.append(chunk)
-            successful_audio_files.append(audio_file_name)
+    successful_audio_files = [
+        file_name
+        for i, file_name in enumerate(all_audio_files)
+        if i not in failed_chunks
+    ]
 
-    # If there's more than one successful chunk, concatenate them
-    if len(successful_audio_files) > 1:
-        concat_list_file = "concat_list.txt"
-        full_concat_list_path = os.path.join(temp_dir, concat_list_file)
-        with open(full_concat_list_path, "w") as f:
-            for audio_file_name in successful_audio_files:
-                f.write(f"file '{audio_file_name}'\n")
+    if not successful_audio_files:
+        raise AudioGenerationError("No audio chunks were successfully generated.")
 
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", concat_list_file,
-                    "-c", "copy",
-                    "audio.mp3",
-                ],
-                check=True,
-                cwd=temp_dir,
-            )
-        except subprocess.CalledProcessError as e:
-            logging.error(f"FFmpeg concatenation failed: {str(e)}")
-            return None
+    if len(successful_audio_files) == 1:
+        source = temp_path / successful_audio_files[0]
+        source.rename(audio_file)
+        return audio_file
 
-        # Clean up individual chunk files
+    concat_list_path = temp_path / "concat_list.txt"
+    concat_list_path.write_text(
+        "".join(f"file '{name}'\n" for name in successful_audio_files),
+        encoding="utf-8",
+    )
+
+    try:
+        run_subprocess(
+            [
+                "ffmpeg",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_list_path),
+                "-c",
+                "copy",
+                str(audio_file),
+            ],
+            cwd=temp_path,
+        )
+    except Exception as e:
+        raise AudioGenerationError(f"FFmpeg concatenation failed: {e}") from e
+    finally:
         for chunk_file in successful_audio_files:
             try:
-                os.remove(os.path.join(temp_dir, chunk_file))
-            except OSError as e:
-                logging.warning(f"Could not remove chunk file {chunk_file}: {str(e)}")
+                (temp_path / chunk_file).unlink()
+            except OSError:
+                logger.warning("Could not remove chunk file %s", chunk_file)
         try:
-            os.remove(full_concat_list_path)
-        except OSError as e:
-            logging.warning(f"Could not remove concat list file: {str(e)}")
-
-    elif len(successful_audio_files) == 1:
-        # If there's only one chunk, just rename it
-        try:
-            os.rename(
-                os.path.join(temp_dir, successful_audio_files[0]), audio_file
-            )
-        except OSError as e:
-            logging.error(f"Failed to rename audio file: {str(e)}")
-            return None
-    else:
-        logging.error("No audio chunks were successfully generated.")
-        return None
+            concat_list_path.unlink()
+        except OSError:
+            logger.warning("Could not remove concat list file")
 
     return audio_file
