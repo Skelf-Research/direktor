@@ -8,8 +8,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import tiktoken
 
 from direktor.core.settings import reset_settings
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _warm_tiktoken_cache() -> None:
+    """Load tiktoken encodings once so tests don't need network access."""
+    tiktoken.encoding_for_model("gpt-4o")
 
 
 @pytest.fixture(autouse=True)

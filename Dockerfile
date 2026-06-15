@@ -23,5 +23,8 @@ COPY README.md LICENSE sample.env ./
 # Install dependencies and the project
 RUN uv sync --all-extras --dev
 
+# Pre-cache tiktoken encodings so containers don't need to download them at runtime.
+RUN uv run python -c "import tiktoken; tiktoken.encoding_for_model('gpt-4o')"
+
 # Default command: run the full test suite
 CMD ["uv", "run", "pytest", "-q"]
