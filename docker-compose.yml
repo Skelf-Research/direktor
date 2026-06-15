@@ -1,0 +1,44 @@
+services:
+  direktor-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # Required settings for the test suite
+      REPLICATE_API_TOKEN: test-replicate-token
+      OPENAI_API_KEY: test-openai-key
+      DISTIL_MODEL: test-distil-model
+      BARK_MODEL: test-bark-model
+      FLUX_MODEL: test-flux-model
+      GPT4_MODEL: gpt-4o
+      AWS_ACCESS_KEY_ID: test-aws-key
+      AWS_SECRET_ACCESS_KEY: test-aws-secret
+      AWS_ENDPOINT_URL: https://test.s3.example.com
+      AWS_BUCKET_NAME: test-bucket
+      LOG_LEVEL: INFO
+    volumes:
+      - .:/app
+    command: ["uv", "run", "pytest", "-q"]
+
+  direktor-lint:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      REPLICATE_API_TOKEN: test-replicate-token
+      OPENAI_API_KEY: test-openai-key
+      DISTIL_MODEL: test-distil-model
+      BARK_MODEL: test-bark-model
+      FLUX_MODEL: test-flux-model
+      GPT4_MODEL: gpt-4o
+      AWS_ACCESS_KEY_ID: test-aws-key
+      AWS_SECRET_ACCESS_KEY: test-aws-secret
+      AWS_ENDPOINT_URL: https://test.s3.example.com
+      AWS_BUCKET_NAME: test-bucket
+      LOG_LEVEL: INFO
+    volumes:
+      - .:/app
+    command: >
+      sh -c "uv run ruff check .
+      && uv run ruff format --check .
+      && uv run mypy direktor"
