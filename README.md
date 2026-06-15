@@ -22,6 +22,13 @@ Or with uv:
 uv add direktor
 ```
 
+## Requirements
+
+- Python 3.11+
+- FFmpeg
+- API keys: OpenAI, Replicate
+- S3-compatible storage (Cloudflare R2 recommended)
+
 ## Quick Start
 
 ```bash
@@ -33,13 +40,6 @@ cp sample.env .env
 direktor input.txt
 ```
 
-## Requirements
-
-- Python 3.11+
-- FFmpeg
-- API keys: OpenAI, Replicate
-- S3-compatible storage (Cloudflare R2 recommended)
-
 ## Usage
 
 ### CLI
@@ -48,12 +48,17 @@ direktor input.txt
 # Full pipeline
 direktor input.txt
 
-# Run up to specific stage
+# Run up to a specific stage
 direktor input.txt --stage 3
 
 # Custom output directory and keyword overlays
 direktor input.txt --output ./videos --keywords-file keywords.json
+
+# Skip narrative optimization, use a custom temp directory, and start fresh
+direktor input.txt --no-optimize --temp-dir /tmp/direktor --clean
 ```
+
+See `direktor --help` for all options.
 
 ### Python API
 
@@ -61,17 +66,22 @@ direktor input.txt --output ./videos --keywords-file keywords.json
 from direktor import generate_video
 
 # Generate complete video
-generate_video("input.txt")
+result = generate_video("input.txt")
+print(result.output_file)
 
 # Run specific stages
-generate_video("input.txt", stage=3)
+result = generate_video("input.txt", stage=3)
 
-# With keyword overlays
+# With keyword overlays and custom output directory
 keywords = [
     ("Introduction", 0, 10),
     ("Main Topic", 10, 60),
 ]
-generate_video("input.txt", keywords=keywords)
+result = generate_video(
+    "input.txt",
+    keywords=keywords,
+    output_dir="./videos",
+)
 ```
 
 ### Module-level Access
@@ -95,6 +105,25 @@ from direktor.core.video import create_video
 
 Each stage is checkpointed. Resume from any failure point or edit intermediate outputs.
 
+## Outputs
+
+Direktor writes all intermediate artifacts to a temporary working directory (by default `temp/<md5_hash>/`). The final video is also copied to the location specified by `--output` / `output_dir`.
+
+```
+temp/
+└── <md5_hash>/
+    ├── podcast_script.txt     # Stage 1
+    ├── audio.mp3              # Stage 2
+    ├── transcript.json        # Stage 3
+    ├── image_prompts.json     # Stage 4
+    ├── images/                # Stage 5
+    │   ├── image_0.webp
+    │   └── ...
+    └── output.mp4             # Stage 6 (final video)
+```
+
+Use `--output` (CLI) or `output_dir` (Python) to copy the final `output.mp4` to a directory of your choice.
+
 ## Configuration
 
 ```env
@@ -114,18 +143,30 @@ AWS_ENDPOINT_URL=https://your-account.r2.cloudflarestorage.com
 AWS_BUCKET_NAME=your_bucket_name
 ```
 
-## Documentation
-
-Full documentation: [docs.skelfresearch.com/direktor](https://docs.skelfresearch.com/direktor)
-
 ## Development
 
 ```bash
 git clone https://github.com/Skelf-Research/direktor.git
 cd direktor
-uv sync --all-extras
+uv sync --all-extras --dev
 uv run pytest
 ```
+
+### Running with Docker
+
+A Dockerfile and `docker-compose.yml` are provided for consistent local testing:
+
+```bash
+# Run the full test suite in Docker
+docker compose up direktor-test --build --abort-on-container-exit
+
+# Run lint and type checks in Docker
+docker compose up direktor-lint --build --abort-on-container-exit
+```
+
+## Documentation
+
+Full documentation: [docs.skelfresearch.com/direktor](https://docs.skelfresearch.com/direktor)
 
 ## License
 
