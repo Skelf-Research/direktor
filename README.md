@@ -1,4 +1,4 @@
-# Direktor
+# Direktor — AI text-to-video pipeline
 
 [![CI](https://github.com/Skelf-Research/direktor/actions/workflows/ci.yml/badge.svg)](https://github.com/Skelf-Research/direktor/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/direktor.svg)](https://pypi.org/project/direktor/)
@@ -9,6 +9,12 @@
 **Text to video pipeline, powered by AI.**
 
 Direktor is a Python library that transforms written content into podcast-style videos. It orchestrates AI models for script generation, voice synthesis, image creation, and video composition through a resumable 6-stage pipeline.
+
+<p align="center">
+  <a href="https://direktor.skelfresearch.com"><b>Website</b></a> •
+  <a href="https://docs.skelfresearch.com/direktor">Documentation</a> •
+  <a href="https://skelfresearch.com">Skelf Research</a>
+</p>
 
 ## Installation
 
@@ -171,3 +177,15 @@ Full documentation: [docs.skelfresearch.com/direktor](https://docs.skelfresearch
 ## License
 
 MIT
+
+---
+
+## Part of Skelf Research
+
+`direktor` is built by **[Skelf Research](https://skelfresearch.com)** — an independent UK AI research lab publishing production-grade open-source projects.
+
+🌐 [Website](https://direktor.skelfresearch.com) · 📚 [Documentation](https://docs.skelfresearch.com/direktor) · 🔬 [All projects](https://skelfresearch.com/projects) · 🤗 [Hugging Face](https://huggingface.co/skelfresearch)
+
+**Related projects:** [anouk](https://anouk.skelfresearch.com) (AI browser extensions), [promptel](https://promptel.skelfresearch.com) (declarative prompt DSL), [blogus](https://blogus.skelfresearch.com) (package.lock for prompts)
+
+<sub>Released under MIT / Apache-2.0. © Skelf Research Limited.</sub>
